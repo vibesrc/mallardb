@@ -1,0 +1,25 @@
+# Minimal release image using pre-built binaries
+# Used by CI - binaries are built separately, no compilation here
+
+FROM alpine:3.23
+
+RUN apk add --no-cache postgresql-client
+
+ARG TARGETARCH
+COPY mallardb-${TARGETARCH} /usr/local/bin/mallardb
+RUN chmod +x /usr/local/bin/mallardb
+
+# Default data directory
+ENV MALLARDB_DATA_DIR=/var/lib/mallardb/data
+VOLUME /var/lib/mallardb/data
+
+# Init script directories
+VOLUME /docker-entrypoint-initdb.d
+VOLUME /docker-entrypoint-startdb.d
+
+EXPOSE 5432
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+    CMD pg_isready -h localhost -p 5432 -U ${POSTGRES_USER:-postgres} || exit 1
+
+ENTRYPOINT ["mallardb"]

@@ -1,0 +1,18 @@
+services:
+  mallardb:
+    # image: ghcr.io/vibesrc/mallardb:latest
+    build: .
+    ports:
+      - 5432:5432
+    volumes:
+      - mallardb_data:/var/lib/mallardb/data
+      # Optional: mount init scripts
+      # - ./initdb.d:/docker-entrypoint-initdb.d:ro
+      # - ./startdb.d:/docker-entrypoint-startdb.d:ro
+    environment:
+      POSTGRES_USER: mallard
+      POSTGRES_PASSWORD: mallard
+      POSTGRES_DB: mallard
+
+volumes:
+  mallardb_data:
