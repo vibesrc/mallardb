@@ -13,8 +13,8 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  prep:
-    name: Prepare release
+  build:
+    name: Build Linux x86_64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,100 +22,26 @@ jobs:
       - name: Set version from tag
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          echo "Setting version to $VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
-          echo "Updated Cargo.toml:"
-          grep "^version" Cargo.toml
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cargo-files
-          path: |
-            Cargo.toml
-            Cargo.lock
-
-  build:
-    name: Build ${{ matrix.target }}
-    needs: prep
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux (static MUSL binaries)
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            artifact: mallardb
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            artifact: mallardb
-          - target: armv7-unknown-linux-musleabihf
-            os: ubuntu-latest
-            artifact: mallardb
-          # macOS
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact: mallardb
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            artifact: mallardb
-          # Windows
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            artifact: mallardb.exe
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download prepared Cargo files
-        uses: actions/download-artifact@v4
-        with:
-          name: cargo-files
-          path: .
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install musl tools (x86_64)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
-      - name: Install cross
-        if: contains(matrix.target, 'linux-musl') && matrix.target != 'x86_64-unknown-linux-musl'
-        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
-      - name: Build (native)
-        if: "!contains(matrix.target, 'linux-musl') || matrix.target == 'x86_64-unknown-linux-musl'"
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release
 
-      - name: Build (cross)
-        if: contains(matrix.target, 'linux-musl') && matrix.target != 'x86_64-unknown-linux-musl'
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      - name: Package
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czvf ../../../mallardb-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../mallardb-${{ matrix.target }}.zip ${{ matrix.artifact }}
+          cd target/release
+          tar -czvf ../../mallardb-x86_64-unknown-linux-gnu.tar.gz mallardb
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mallardb-${{ matrix.target }}
-          path: mallardb-${{ matrix.target }}.*
+          name: mallardb-x86_64-unknown-linux-gnu
+          path: mallardb-x86_64-unknown-linux-gnu.tar.gz
 
   release:
     name: Create Release
@@ -134,7 +60,7 @@ jobs:
       - name: Create checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          sha256sum *.tar.gz > SHA256SUMS.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -142,28 +68,20 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz
-            artifacts/*.zip
             artifacts/SHA256SUMS.txt
 
   docker:
     name: Build and Push Docker
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: mallardb-*linux-musl*
-          merge-multiple: true
-
-      - name: Prepare binaries
+      - name: Set version from tag
         run: |
-          tar -xzf mallardb-x86_64-unknown-linux-musl.tar.gz
-          mv mallardb mallardb-amd64
-          tar -xzf mallardb-aarch64-unknown-linux-musl.tar.gz
-          mv mallardb mallardb-arm64
+          VERSION=${GITHUB_REF_NAME#v}
+          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+
+      - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
 
@@ -188,8 +106,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
