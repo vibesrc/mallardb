@@ -1,9 +1,12 @@
 # Minimal release image using pre-built binaries
 # Used by CI - binaries are built separately, no compilation here
 
-FROM alpine:3.23
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache postgresql-client
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
 COPY mallardb-${TARGETARCH} /usr/local/bin/mallardb

@@ -14,8 +14,19 @@ env:
 
 jobs:
   build:
-    name: Build Linux x86_64
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            arch: arm64
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +39,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build
         run: cargo build --release
@@ -35,13 +48,20 @@ jobs:
       - name: Package
         run: |
           cd target/release
-          tar -czvf ../../mallardb-x86_64-unknown-linux-gnu.tar.gz mallardb
+          tar -czvf ../../mallardb-${{ matrix.target }}.tar.gz mallardb
+          cp mallardb ../../mallardb-${{ matrix.arch }}
 
-      - name: Upload artifact
+      - name: Upload tarball
         uses: actions/upload-artifact@v4
         with:
-          name: mallardb-x86_64-unknown-linux-gnu
-          path: mallardb-x86_64-unknown-linux-gnu.tar.gz
+          name: mallardb-${{ matrix.target }}
+          path: mallardb-${{ matrix.target }}.tar.gz
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: mallardb-${{ matrix.arch }}
 
   release:
     name: Create Release
@@ -72,16 +92,21 @@ jobs:
 
   docker:
     name: Build and Push Docker
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set version from tag
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
 
-      - uses: docker/setup-qemu-action@v3
+      - name: Prepare binaries
+        run: |
+          chmod +x mallardb-amd64 mallardb-arm64
+          ls -la mallardb-*
 
       - uses: docker/setup-buildx-action@v3
 
@@ -106,9 +131,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
