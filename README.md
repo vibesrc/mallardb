@@ -37,7 +37,20 @@ POSTGRES_READONLY_PASSWORD=readerpass
 
 # Or with environment variables (only password is required)
 POSTGRES_PASSWORD=secret ./target/release/mallardb
+
+# With CLI options (override env vars)
+./target/release/mallardb --data-dir /var/lib/mallardb --port 5433 --host 127.0.0.1
 ```
+
+#### CLI Options
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--data-dir` | `-d` | Data directory path (overrides MALLARDB_DATA_DIR) |
+| `--port` | `-p` | Listen port (overrides MALLARDB_PORT) |
+| `--host` | `-H` | Listen host/address (overrides MALLARDB_HOST) |
+| `--help` | `-h` | Print help |
+| `--version` | `-V` | Print version |
 
 ### 4. Connect
 

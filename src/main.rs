@@ -3,10 +3,11 @@
 //! mallardb presents a fully PostgreSQL-compatible interface to clients while
 //! internally executing all queries against DuckDB.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use clap::Parser;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{error, info, warn};
@@ -17,6 +18,25 @@ use mallardb::config::Config;
 use mallardb::handler::MallardbHandlerFactory;
 
 use pgwire::tokio::process_socket;
+
+/// mallardb - PostgreSQL-compatible interface over DuckDB
+#[derive(Parser, Debug)]
+#[command(name = "mallardb")]
+#[command(about = "PostgreSQL-compatible interface over DuckDB", long_about = None)]
+#[command(version)]
+struct Args {
+    /// Data directory path (overrides MALLARDB_DATA_DIR)
+    #[arg(short = 'd', long, value_name = "PATH")]
+    data_dir: Option<PathBuf>,
+
+    /// Listen port (overrides MALLARDB_PORT)
+    #[arg(short = 'p', long, value_name = "PORT")]
+    port: Option<u16>,
+
+    /// Listen host/address (overrides MALLARDB_HOST)
+    #[arg(short = 'H', long, value_name = "HOST")]
+    host: Option<String>,
+}
 
 /// Run SQL scripts from a directory in sorted order
 async fn run_scripts(backend: &Backend, dir: &Path, description: &str) {
@@ -68,6 +88,9 @@ async fn main() {
     // Load environment variables from .env if present
     let _ = dotenvy::dotenv();
 
+    // Parse CLI arguments
+    let args = Args::parse();
+
     // Initialize logging - respects RUST_LOG env var, defaults to info
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
@@ -76,9 +99,9 @@ async fn main() {
         .with_target(true)
         .init();
 
-    // Load configuration
+    // Load configuration from env, then apply CLI overrides
     let config = match Config::from_env() {
-        Ok(c) => Arc::new(c),
+        Ok(c) => Arc::new(c.with_cli_overrides(args.data_dir, args.port, args.host)),
         Err(e) => {
             eprintln!("Configuration error: {}", e);
             eprintln!("");

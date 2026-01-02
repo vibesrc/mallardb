@@ -128,6 +128,25 @@ impl Config {
     pub fn has_readonly_role(&self) -> bool {
         self.postgres_readonly_user.is_some() && self.postgres_readonly_password.is_some()
     }
+
+    /// Apply CLI overrides to the configuration
+    pub fn with_cli_overrides(
+        mut self,
+        data_dir: Option<std::path::PathBuf>,
+        port: Option<u16>,
+        host: Option<String>,
+    ) -> Self {
+        if let Some(dir) = data_dir {
+            self.data_dir = dir;
+        }
+        if let Some(p) = port {
+            self.port = p;
+        }
+        if let Some(h) = host {
+            self.host = h;
+        }
+        self
+    }
 }
 
 #[derive(Debug)]
