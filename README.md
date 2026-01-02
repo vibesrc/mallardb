@@ -54,20 +54,21 @@ PGPASSWORD=readerpass psql -h 127.0.0.1 -p 5432 -U reader -d mallard
 
 ## Features
 
-- **PostgreSQL Wire Protocol** - Connect with any PostgreSQL client (psql, DBeaver, ORMs, etc.)
+- **PostgreSQL Wire Protocol** - Connect with any PostgreSQL client (psql, DBeaver, Grafana, ORMs, etc.)
 - **MD5 Password Authentication** - Standard PostgreSQL authentication
 - **Role-Based Access Control** - Write users can modify data, read-only users can only query
 - **DuckDB Backend** - Fast analytical queries with columnar storage
 - **pg_catalog Emulation** - Compatible with ORMs and tools that query system catalogs
+- **SQL Rewriting** - Automatic translation of PostgreSQL-specific syntax to DuckDB
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    PostgreSQL Clients                    │
-│              (psql, DBeaver, ORMs, etc.)                │
+│          (psql, DBeaver, Grafana, ORMs, etc.)           │
 └─────────────────────┬───────────────────────────────────┘
-                      │ PostgreSQL Wire Protocol (port 5433)
+                      │ PostgreSQL Wire Protocol (port 5432)
                       ▼
 ┌─────────────────────────────────────────────────────────┐
 │                      mallardb                            │
