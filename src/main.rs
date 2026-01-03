@@ -29,9 +29,9 @@ use pgwire::tokio::process_socket;
 #[command(about = "PostgreSQL-compatible interface over DuckDB", long_about = None)]
 #[command(version)]
 struct Args {
-    /// Data directory path (overrides MALLARDB_DATA_DIR)
+    /// Database file path (overrides MALLARDB_DATABASE)
     #[arg(short = 'd', long, value_name = "PATH")]
-    data_dir: Option<PathBuf>,
+    database: Option<PathBuf>,
 
     /// Listen port (overrides MALLARDB_PORT)
     #[arg(short = 'p', long, value_name = "PORT")]
@@ -108,7 +108,7 @@ async fn main() {
 
     // Load configuration from env, then apply CLI overrides
     let config = match Config::from_env() {
-        Ok(c) => Arc::new(c.with_cli_overrides(args.data_dir, args.port, args.host)),
+        Ok(c) => Arc::new(c.with_cli_overrides(args.database, args.port, args.host)),
         Err(e) => {
             eprintln!("Configuration error: {}", e);
             eprintln!();
@@ -122,7 +122,7 @@ async fn main() {
             eprintln!("  MALLARDB_READONLY_PASSWORD - Password for read-only user");
             eprintln!("  MALLARDB_HOST          - Listen address (default: 0.0.0.0)");
             eprintln!("  MALLARDB_PORT          - Listen port (default: 5432)");
-            eprintln!("  MALLARDB_DATA_DIR      - Data directory (default: ./data)");
+            eprintln!("  MALLARDB_DATABASE      - Database file path (default: ./data/mallard.db)");
             eprintln!();
             eprintln!("Note: POSTGRES_* variants are also accepted for compatibility.");
             std::process::exit(1);

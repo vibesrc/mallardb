@@ -19,8 +19,7 @@ pub struct Config {
     pub port: u16,
 
     // Data storage
-    pub data_dir: PathBuf,
-    pub db_file: String,
+    pub database: PathBuf,
 
     // Performance
     pub max_readers: usize,
@@ -64,10 +63,9 @@ impl Config {
             .parse()
             .unwrap_or(5432);
 
-        let data_dir = std::env::var("MALLARDB_DATA_DIR")
+        let database = std::env::var("MALLARDB_DATABASE")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("./data"));
-        let db_file = std::env::var("MALLARDB_DB_FILE").unwrap_or_else(|_| "data.db".to_string());
+            .unwrap_or_else(|_| PathBuf::from("./data/mallard.db"));
 
         let max_readers = std::env::var("MALLARDB_MAX_READERS")
             .unwrap_or_else(|_| "64".to_string())
@@ -102,8 +100,7 @@ impl Config {
             postgres_db,
             host,
             port,
-            data_dir,
-            db_file,
+            database,
             max_readers,
             writer_queue_size,
             batch_size,
@@ -115,8 +112,8 @@ impl Config {
     }
 
     /// Get the full path to the database file
-    pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join(&self.db_file)
+    pub fn db_path(&self) -> &PathBuf {
+        &self.database
     }
 
     /// Get the server listen address
@@ -132,12 +129,12 @@ impl Config {
     /// Apply CLI overrides to the configuration
     pub fn with_cli_overrides(
         mut self,
-        data_dir: Option<std::path::PathBuf>,
+        database: Option<std::path::PathBuf>,
         port: Option<u16>,
         host: Option<String>,
     ) -> Self {
-        if let Some(dir) = data_dir {
-            self.data_dir = dir;
+        if let Some(db) = database {
+            self.database = db;
         }
         if let Some(p) = port {
             self.port = p;
@@ -186,7 +183,7 @@ mod tests {
                 "MALLARDB_READONLY_PASSWORD",
                 "MALLARDB_HOST",
                 "MALLARDB_PORT",
-                "MALLARDB_DATA_DIR",
+                "MALLARDB_DATABASE",
                 "POSTGRES_USER",
                 "POSTGRES_PASSWORD",
                 "POSTGRES_DB",
@@ -274,8 +271,7 @@ mod tests {
         assert_eq!(config.postgres_db, "mallard");
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 5432);
-        assert_eq!(config.data_dir, PathBuf::from("./data"));
-        assert_eq!(config.db_file, "data.db");
+        assert_eq!(config.database, PathBuf::from("./data/mallard.db"));
         assert_eq!(config.max_readers, 64);
         assert_eq!(config.pg_version, "15.0");
 
@@ -363,11 +359,11 @@ mod tests {
         unsafe {
             clear_env_vars();
             env::set_var("POSTGRES_PASSWORD", "test");
-            env::set_var("MALLARDB_DATA_DIR", "/custom/path");
+            env::set_var("MALLARDB_DATABASE", "/custom/path/my.db");
         }
 
         let config = Config::from_env().unwrap();
-        assert_eq!(config.db_path(), PathBuf::from("/custom/path/data.db"));
+        assert_eq!(config.db_path(), &PathBuf::from("/custom/path/my.db"));
 
         unsafe {
             clear_env_vars();

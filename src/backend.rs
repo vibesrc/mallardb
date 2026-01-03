@@ -459,7 +459,7 @@ pub struct Backend {
 impl Backend {
     /// Create a new backend
     pub fn new(config: Arc<Config>) -> Self {
-        let db_path = config.db_path();
+        let db_path = config.db_path().clone();
 
         // Ensure data directory exists
         if let Some(parent) = db_path.parent()
@@ -799,6 +799,7 @@ mod tests {
     #[test]
     fn test_backend_new() {
         let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
         let config = Arc::new(crate::config::Config {
             postgres_user: "test".to_string(),
             postgres_password: "test".to_string(),
@@ -807,8 +808,7 @@ mod tests {
             postgres_db: "test".to_string(),
             host: "127.0.0.1".to_string(),
             port: 5432,
-            data_dir: dir.path().to_path_buf(),
-            db_file: "data.db".to_string(),
+            database: db_path.clone(),
             max_readers: 64,
             writer_queue_size: 1000,
             batch_size: 1000,
@@ -819,7 +819,7 @@ mod tests {
         });
 
         let backend = Backend::new(config.clone());
-        assert_eq!(backend.db_path(), &dir.path().join("data.db"));
+        assert_eq!(backend.db_path(), &db_path);
     }
 
     #[test]
@@ -833,8 +833,7 @@ mod tests {
             postgres_db: "test".to_string(),
             host: "127.0.0.1".to_string(),
             port: 5432,
-            data_dir: dir.path().to_path_buf(),
-            db_file: "data.db".to_string(),
+            database: dir.path().join("test.db"),
             max_readers: 64,
             writer_queue_size: 1000,
             batch_size: 1000,
@@ -863,8 +862,7 @@ mod tests {
             postgres_db: "test".to_string(),
             host: "127.0.0.1".to_string(),
             port: 5432,
-            data_dir: dir.path().to_path_buf(),
-            db_file: "data.db".to_string(),
+            database: dir.path().join("test.db"),
             max_readers: 64,
             writer_queue_size: 1000,
             batch_size: 1000,

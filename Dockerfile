@@ -16,8 +16,8 @@ RUN apk add --no-cache postgresql-client
 
 COPY --from=builder /app/target/release/mallardb /usr/local/bin/mallardb
 
-# Default data directory
-ENV MALLARDB_DATA_DIR=/var/lib/mallardb/data
+# Default database path (follows PostgreSQL PGDATA convention)
+ENV MALLARDB_DATABASE=/var/lib/mallardb/data/mallard.db
 VOLUME /var/lib/mallardb/data
 
 # Init script directories
