@@ -5,9 +5,10 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use futures::{stream, Stream};
+use futures::{Stream, stream};
 use tracing::debug;
 
+use bytes::Bytes;
 use pgwire::api::auth::md5pass::Md5PasswordAuthStartupHandler;
 use pgwire::api::auth::{DefaultServerParameterProvider, StartupHandler};
 use pgwire::api::portal::{Format, Portal};
@@ -20,7 +21,6 @@ use pgwire::api::stmt::{NoopQueryParser, StoredStatement};
 use pgwire::api::{ClientInfo, PgWireServerHandlers};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
-use bytes::Bytes;
 
 use crate::auth::MallardbAuthSource;
 use crate::backend::{Backend, DuckDbConnection, QueryOutput};
@@ -39,7 +39,11 @@ pub struct MallardbHandler {
 
 impl MallardbHandler {
     /// Create a new handler with its own DuckDB connection
-    pub fn new(backend: &Backend, config: Arc<Config>, readonly: bool) -> Result<Self, crate::error::MallardbError> {
+    pub fn new(
+        backend: &Backend,
+        config: Arc<Config>,
+        readonly: bool,
+    ) -> Result<Self, crate::error::MallardbError> {
         let conn = if readonly {
             backend.create_readonly_connection()?
         } else {
@@ -60,17 +64,17 @@ impl MallardbHandler {
         debug!("Executing query: {}", sql);
 
         // Check for catalog queries first
-        if is_catalog_query(sql) {
-            if let Some(result) = handle_catalog_query(
+        if is_catalog_query(sql)
+            && let Some(result) = handle_catalog_query(
                 sql,
                 &self.config.postgres_db,
                 username,
                 &self.config.pg_version,
-            ) {
-                return Ok(result);
-            }
-            // pg_namespace falls through to DuckDB's built-in pg_catalog.pg_namespace
+            )
+        {
+            return Ok(result);
         }
+        // pg_namespace falls through to DuckDB's built-in pg_catalog.pg_namespace
 
         // Rewrite SQL for DuckDB compatibility (e.g., 'public' -> 'main', catalog -> 'data')
         let sql = rewrite_sql(sql, &self.config.postgres_db);
@@ -239,9 +243,7 @@ fn substitute_parameters(sql: &str, parameters: &[Option<Bytes>], format: &Forma
         let is_binary = match format {
             Format::UnifiedBinary => true,
             Format::UnifiedText => false,
-            Format::Individual(formats) => {
-                formats.get(i).map(|&f| f == 1).unwrap_or(false)
-            }
+            Format::Individual(formats) => formats.get(i).map(|&f| f == 1).unwrap_or(false),
         };
 
         let value = match param {
@@ -270,7 +272,11 @@ fn decode_binary_param(bytes: &Bytes) -> String {
             // bool or int1
             let v = bytes[0];
             if v == 0 || v == 1 {
-                if v == 1 { "true".to_string() } else { "false".to_string() }
+                if v == 1 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
             } else {
                 (v as i8).to_string()
             }
@@ -288,8 +294,7 @@ fn decode_binary_param(bytes: &Bytes) -> String {
         8 => {
             // int8 (big-endian)
             let v = i64::from_be_bytes([
-                bytes[0], bytes[1], bytes[2], bytes[3],
-                bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]);
             v.to_string()
         }
@@ -306,9 +311,11 @@ fn decode_text_param(bytes: &Bytes) -> String {
     let s = String::from_utf8_lossy(bytes);
     if s.is_empty() {
         "''".to_string()
-    } else if s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok() {
-        s.to_string()
-    } else if s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false") {
+    } else if s.parse::<i64>().is_ok()
+        || s.parse::<f64>().is_ok()
+        || s.eq_ignore_ascii_case("true")
+        || s.eq_ignore_ascii_case("false")
+    {
         s.to_string()
     } else if s.eq_ignore_ascii_case("null") {
         "NULL".to_string()
@@ -397,17 +404,16 @@ impl ExtendedQueryHandler for MallardbHandler {
                 &self.config.postgres_db,
                 &self.config.postgres_user,
                 &self.config.pg_version,
-            ) {
-                if let QueryOutput::Rows { columns, .. } = result {
-                    let field_infos: Vec<FieldInfo> = columns
-                        .iter()
-                        .map(|col| {
-                            let pg_type = duckdb_type_to_pgwire(&col.type_name);
-                            FieldInfo::new(col.name.clone(), None, None, pg_type, FieldFormat::Text)
-                        })
-                        .collect();
-                    return Ok(DescribeStatementResponse::new(vec![], field_infos));
-                }
+            ) && let QueryOutput::Rows { columns, .. } = result
+            {
+                let field_infos: Vec<FieldInfo> = columns
+                    .iter()
+                    .map(|col| {
+                        let pg_type = duckdb_type_to_pgwire(&col.type_name);
+                        FieldInfo::new(col.name.clone(), None, None, pg_type, FieldFormat::Text)
+                    })
+                    .collect();
+                return Ok(DescribeStatementResponse::new(vec![], field_infos));
             }
         }
 
@@ -464,24 +470,23 @@ impl ExtendedQueryHandler for MallardbHandler {
             .unwrap_or(&self.config.postgres_user);
 
         // Check for catalog queries first - return their schema
-        if is_catalog_query(&query) {
-            if let Some(result) = handle_catalog_query(
+        if is_catalog_query(&query)
+            && let Some(result) = handle_catalog_query(
                 &query,
                 &self.config.postgres_db,
                 username,
                 &self.config.pg_version,
-            ) {
-                if let QueryOutput::Rows { columns, .. } = result {
-                    let field_infos: Vec<FieldInfo> = columns
-                        .iter()
-                        .map(|col| {
-                            let pg_type = duckdb_type_to_pgwire(&col.type_name);
-                            FieldInfo::new(col.name.clone(), None, None, pg_type, FieldFormat::Text)
-                        })
-                        .collect();
-                    return Ok(DescribePortalResponse::new(field_infos));
-                }
-            }
+            )
+            && let QueryOutput::Rows { columns, .. } = result
+        {
+            let field_infos: Vec<FieldInfo> = columns
+                .iter()
+                .map(|col| {
+                    let pg_type = duckdb_type_to_pgwire(&col.type_name);
+                    FieldInfo::new(col.name.clone(), None, None, pg_type, FieldFormat::Text)
+                })
+                .collect();
+            return Ok(DescribePortalResponse::new(field_infos));
         }
 
         // Rewrite SQL for DuckDB compatibility
@@ -534,9 +539,15 @@ impl MallardbHandlerFactory {
     }
 
     /// Create a per-connection handler wrapper
-    pub fn create_connection_handler(&self) -> Result<MallardbConnectionHandler, crate::error::MallardbError> {
+    pub fn create_connection_handler(
+        &self,
+    ) -> Result<MallardbConnectionHandler, crate::error::MallardbError> {
         // Create a single handler that will be shared for both simple and extended queries
-        let handler = Arc::new(MallardbHandler::new(&self.backend, self.config.clone(), false)?);
+        let handler = Arc::new(MallardbHandler::new(
+            &self.backend,
+            self.config.clone(),
+            false,
+        )?);
 
         let mut parameters = DefaultServerParameterProvider::default();
         parameters.server_version = format!(
@@ -563,11 +574,11 @@ pub struct MallardbConnectionHandler {
 
 impl PgWireServerHandlers for MallardbConnectionHandler {
     fn simple_query_handler(&self) -> Arc<impl SimpleQueryHandler> {
-        self.handler.clone()  // Return the SAME handler
+        self.handler.clone() // Return the SAME handler
     }
 
     fn extended_query_handler(&self) -> Arc<impl ExtendedQueryHandler> {
-        self.handler.clone()  // Return the SAME handler
+        self.handler.clone() // Return the SAME handler
     }
 
     fn startup_handler(&self) -> Arc<impl StartupHandler> {

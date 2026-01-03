@@ -179,11 +179,19 @@ mod tests {
         // SAFETY: Caller ensures no concurrent access to environment variables
         unsafe {
             for var in [
-                "MALLARDB_USER", "MALLARDB_PASSWORD", "MALLARDB_DB",
-                "MALLARDB_READONLY_USER", "MALLARDB_READONLY_PASSWORD",
-                "MALLARDB_HOST", "MALLARDB_PORT", "MALLARDB_DATA_DIR",
-                "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
-                "POSTGRES_READONLY_USER", "POSTGRES_READONLY_PASSWORD",
+                "MALLARDB_USER",
+                "MALLARDB_PASSWORD",
+                "MALLARDB_DB",
+                "MALLARDB_READONLY_USER",
+                "MALLARDB_READONLY_PASSWORD",
+                "MALLARDB_HOST",
+                "MALLARDB_PORT",
+                "MALLARDB_DATA_DIR",
+                "POSTGRES_USER",
+                "POSTGRES_PASSWORD",
+                "POSTGRES_DB",
+                "POSTGRES_READONLY_USER",
+                "POSTGRES_READONLY_PASSWORD",
             ] {
                 env::remove_var(var);
             }
@@ -192,10 +200,15 @@ mod tests {
 
     #[test]
     fn test_config_requires_password() {
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
         let result = Config::from_env();
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::MissingRequired(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::MissingRequired(_)
+        ));
     }
 
     #[test]
@@ -210,7 +223,9 @@ mod tests {
         assert_eq!(config.postgres_user, "mallard");
         assert_eq!(config.postgres_db, "mallard");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -223,7 +238,9 @@ mod tests {
         let config = Config::from_env().unwrap();
         assert_eq!(config.postgres_password, "mallardsecret");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -240,7 +257,9 @@ mod tests {
         assert_eq!(config.postgres_password, "mallard_pass");
         assert_eq!(config.postgres_user, "mallard_user");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -260,7 +279,9 @@ mod tests {
         assert_eq!(config.max_readers, 64);
         assert_eq!(config.pg_version, "15.0");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -276,7 +297,9 @@ mod tests {
         assert_eq!(config.postgres_user, "myuser");
         assert_eq!(config.postgres_db, "mydb");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -291,7 +314,9 @@ mod tests {
         assert_eq!(config.postgres_user, "customuser");
         assert_eq!(config.postgres_db, "customuser");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -306,7 +331,9 @@ mod tests {
         assert!(config.postgres_readonly_user.is_none());
         assert!(config.postgres_readonly_password.is_none());
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -321,9 +348,14 @@ mod tests {
         let config = Config::from_env().unwrap();
         assert!(config.has_readonly_role());
         assert_eq!(config.postgres_readonly_user, Some("reader".to_string()));
-        assert_eq!(config.postgres_readonly_password, Some("readerpass".to_string()));
+        assert_eq!(
+            config.postgres_readonly_password,
+            Some("readerpass".to_string())
+        );
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -337,7 +369,9 @@ mod tests {
         let config = Config::from_env().unwrap();
         assert_eq!(config.db_path(), PathBuf::from("/custom/path/data.db"));
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]
@@ -352,7 +386,9 @@ mod tests {
         let config = Config::from_env().unwrap();
         assert_eq!(config.listen_addr(), "127.0.0.1:5433");
 
-        unsafe { clear_env_vars(); }
+        unsafe {
+            clear_env_vars();
+        }
     }
 
     #[test]

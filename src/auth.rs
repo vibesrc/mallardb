@@ -37,10 +37,10 @@ impl MallardbAuthSource {
             return Some(RoleType::Write);
         }
 
-        if let Some(ref readonly_user) = self.config.postgres_readonly_user {
-            if username == readonly_user {
-                return Some(RoleType::Read);
-            }
+        if let Some(ref readonly_user) = self.config.postgres_readonly_user
+            && username == readonly_user
+        {
+            return Some(RoleType::Read);
         }
 
         None
@@ -52,10 +52,10 @@ impl MallardbAuthSource {
             return Some(&self.config.postgres_password);
         }
 
-        if let Some(ref readonly_user) = self.config.postgres_readonly_user {
-            if username == readonly_user {
-                return self.config.postgres_readonly_password.as_deref();
-            }
+        if let Some(ref readonly_user) = self.config.postgres_readonly_user
+            && username == readonly_user
+        {
+            return self.config.postgres_readonly_password.as_deref();
         }
 
         None
@@ -67,15 +67,12 @@ impl AuthSource for MallardbAuthSource {
     async fn get_password(&self, login_info: &LoginInfo) -> PgWireResult<Password> {
         use rand::Rng;
 
-        let username = login_info
-            .user()
-            .clone()
-            .unwrap_or_default();
+        let username = login_info.user().unwrap_or_default();
 
         tracing::debug!("Auth request for user: {}", username);
 
         // Check if user exists
-        let password = self.get_password_for_user(&username).unwrap_or("");
+        let password = self.get_password_for_user(username).unwrap_or("");
 
         // Generate random 4-byte salt
         let mut rng = rand::rng();
@@ -83,9 +80,14 @@ impl AuthSource for MallardbAuthSource {
 
         // Compute the expected MD5 hash that client will send
         // Format: md5(md5(password + username) + salt)
-        let hash = hash_md5_password(&username, password, &salt);
+        let hash = hash_md5_password(username, password, &salt);
 
-        tracing::debug!("Auth: user={}, salt={:?}, hash_len={}", username, salt, hash.len());
+        tracing::debug!(
+            "Auth: user={}, salt={:?}, hash_len={}",
+            username,
+            salt,
+            hash.len()
+        );
 
         Ok(Password::new(Some(salt), hash.as_bytes().to_vec()))
     }
@@ -161,7 +163,7 @@ mod tests {
     #[test]
     fn test_role_type_clone() {
         let role = RoleType::Write;
-        let cloned = role.clone();
+        let cloned = role;
         assert_eq!(role, cloned);
     }
 
@@ -198,7 +200,12 @@ mod tests {
 
     #[test]
     fn test_validate_user_read_role() {
-        let config = Arc::new(create_test_config("admin", "secret", Some("reader"), Some("readerpass")));
+        let config = Arc::new(create_test_config(
+            "admin",
+            "secret",
+            Some("reader"),
+            Some("readerpass"),
+        ));
         let auth = MallardbAuthSource::new(config);
 
         let role = auth.validate_user("reader");
@@ -236,7 +243,12 @@ mod tests {
 
     #[test]
     fn test_get_password_for_read_user() {
-        let config = Arc::new(create_test_config("admin", "secret", Some("reader"), Some("readerpass")));
+        let config = Arc::new(create_test_config(
+            "admin",
+            "secret",
+            Some("reader"),
+            Some("readerpass"),
+        ));
         let auth = MallardbAuthSource::new(config);
 
         let password = auth.get_password_for_user("reader");
@@ -285,11 +297,7 @@ mod tests {
 
     #[test]
     fn test_session_info_new() {
-        let session = SessionInfo::new(
-            "testuser".to_string(),
-            RoleType::Write,
-            "mydb".to_string(),
-        );
+        let session = SessionInfo::new("testuser".to_string(), RoleType::Write, "mydb".to_string());
 
         assert_eq!(session.username, "testuser");
         assert_eq!(session.role, RoleType::Write);
@@ -306,7 +314,8 @@ mod tests {
         // Process IDs and secret keys should be different (random)
         // Note: There's a tiny chance they could be the same, but it's extremely unlikely
         assert!(
-            session1.process_id != session2.process_id || session1.secret_key != session2.secret_key,
+            session1.process_id != session2.process_id
+                || session1.secret_key != session2.secret_key,
             "Sessions should have different random identifiers"
         );
     }

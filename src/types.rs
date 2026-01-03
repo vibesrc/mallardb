@@ -122,23 +122,108 @@ pub struct PgTypeInfo {
 /// Get the pg_type entries for catalog emulation
 pub fn get_pg_types() -> Vec<PgTypeInfo> {
     vec![
-        PgTypeInfo { oid: oid::BOOL, typname: "bool", typlen: 1, typtype: 'b' },
-        PgTypeInfo { oid: oid::BYTEA, typname: "bytea", typlen: -1, typtype: 'b' },
-        PgTypeInfo { oid: oid::INT8, typname: "int8", typlen: 8, typtype: 'b' },
-        PgTypeInfo { oid: oid::INT2, typname: "int2", typlen: 2, typtype: 'b' },
-        PgTypeInfo { oid: oid::INT4, typname: "int4", typlen: 4, typtype: 'b' },
-        PgTypeInfo { oid: oid::TEXT, typname: "text", typlen: -1, typtype: 'b' },
-        PgTypeInfo { oid: oid::FLOAT4, typname: "float4", typlen: 4, typtype: 'b' },
-        PgTypeInfo { oid: oid::FLOAT8, typname: "float8", typlen: 8, typtype: 'b' },
-        PgTypeInfo { oid: oid::VARCHAR, typname: "varchar", typlen: -1, typtype: 'b' },
-        PgTypeInfo { oid: oid::DATE, typname: "date", typlen: 4, typtype: 'b' },
-        PgTypeInfo { oid: oid::TIME, typname: "time", typlen: 8, typtype: 'b' },
-        PgTypeInfo { oid: oid::TIMESTAMP, typname: "timestamp", typlen: 8, typtype: 'b' },
-        PgTypeInfo { oid: oid::TIMESTAMPTZ, typname: "timestamptz", typlen: 8, typtype: 'b' },
-        PgTypeInfo { oid: oid::INTERVAL, typname: "interval", typlen: 16, typtype: 'b' },
-        PgTypeInfo { oid: oid::NUMERIC, typname: "numeric", typlen: -1, typtype: 'b' },
-        PgTypeInfo { oid: oid::UUID, typname: "uuid", typlen: 16, typtype: 'b' },
-        PgTypeInfo { oid: oid::JSONB, typname: "jsonb", typlen: -1, typtype: 'b' },
+        PgTypeInfo {
+            oid: oid::BOOL,
+            typname: "bool",
+            typlen: 1,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::BYTEA,
+            typname: "bytea",
+            typlen: -1,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::INT8,
+            typname: "int8",
+            typlen: 8,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::INT2,
+            typname: "int2",
+            typlen: 2,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::INT4,
+            typname: "int4",
+            typlen: 4,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::TEXT,
+            typname: "text",
+            typlen: -1,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::FLOAT4,
+            typname: "float4",
+            typlen: 4,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::FLOAT8,
+            typname: "float8",
+            typlen: 8,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::VARCHAR,
+            typname: "varchar",
+            typlen: -1,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::DATE,
+            typname: "date",
+            typlen: 4,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::TIME,
+            typname: "time",
+            typlen: 8,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::TIMESTAMP,
+            typname: "timestamp",
+            typlen: 8,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::TIMESTAMPTZ,
+            typname: "timestamptz",
+            typlen: 8,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::INTERVAL,
+            typname: "interval",
+            typlen: 16,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::NUMERIC,
+            typname: "numeric",
+            typlen: -1,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::UUID,
+            typname: "uuid",
+            typlen: 16,
+            typtype: 'b',
+        },
+        PgTypeInfo {
+            oid: oid::JSONB,
+            typname: "jsonb",
+            typlen: -1,
+            typtype: 'b',
+        },
     ]
 }
 
@@ -276,10 +361,26 @@ mod tests {
         assert!(!types.is_empty());
 
         // Check for some expected types
-        assert!(types.iter().any(|t| t.typname == "bool" && t.oid == oid::BOOL));
-        assert!(types.iter().any(|t| t.typname == "int4" && t.oid == oid::INT4));
-        assert!(types.iter().any(|t| t.typname == "text" && t.oid == oid::TEXT));
-        assert!(types.iter().any(|t| t.typname == "timestamp" && t.oid == oid::TIMESTAMP));
+        assert!(
+            types
+                .iter()
+                .any(|t| t.typname == "bool" && t.oid == oid::BOOL)
+        );
+        assert!(
+            types
+                .iter()
+                .any(|t| t.typname == "int4" && t.oid == oid::INT4)
+        );
+        assert!(
+            types
+                .iter()
+                .any(|t| t.typname == "text" && t.oid == oid::TEXT)
+        );
+        assert!(
+            types
+                .iter()
+                .any(|t| t.typname == "timestamp" && t.oid == oid::TIMESTAMP)
+        );
     }
 
     #[test]

@@ -144,10 +144,14 @@ fn analyze_table_factor(pattern: &mut QueryPattern, factor: &TableFactor) {
             let sub_pattern = analyze_query_pattern(subquery);
             pattern.has_string_to_array_table_func |= sub_pattern.has_string_to_array_table_func;
             pattern.has_generate_series_table_func |= sub_pattern.has_generate_series_table_func;
-            pattern.queries_information_schema_tables |= sub_pattern.queries_information_schema_tables;
-            pattern.queries_information_schema_columns |= sub_pattern.queries_information_schema_columns;
+            pattern.queries_information_schema_tables |=
+                sub_pattern.queries_information_schema_tables;
+            pattern.queries_information_schema_columns |=
+                sub_pattern.queries_information_schema_columns;
         }
-        TableFactor::NestedJoin { table_with_joins, .. } => {
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
             analyze_table_factor(pattern, &table_with_joins.relation);
             for join in &table_with_joins.joins {
                 analyze_table_factor(pattern, &join.relation);
@@ -160,12 +164,20 @@ fn analyze_table_factor(pattern: &mut QueryPattern, factor: &TableFactor) {
 /// Analyze expressions for subqueries that might contain the patterns
 fn analyze_expr_for_subqueries(pattern: &mut QueryPattern, expr: &Expr) {
     match expr {
-        Expr::Subquery(query) | Expr::InSubquery { subquery: query, .. } => {
+        Expr::Subquery(query)
+        | Expr::InSubquery {
+            subquery: query, ..
+        } => {
             let sub_pattern = analyze_query_pattern(query);
             pattern.has_string_to_array_table_func |= sub_pattern.has_string_to_array_table_func;
             pattern.has_generate_series_table_func |= sub_pattern.has_generate_series_table_func;
         }
-        Expr::Case { operand, conditions, else_result, .. } => {
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
             if let Some(op) = operand {
                 analyze_expr_for_subqueries(pattern, op);
             }
@@ -251,11 +263,9 @@ fn rewrite_expr(expr: &mut Expr, database: &str) {
             "pg_filenode_relation",
         ];
 
-        let base_name = func_name
-            .strip_prefix("pg_catalog.")
-            .unwrap_or(&func_name);
+        let base_name = func_name.strip_prefix("pg_catalog.").unwrap_or(&func_name);
 
-        if unsupported_functions.iter().any(|f| base_name == *f) {
+        if unsupported_functions.contains(&base_name) {
             *expr = Expr::Value(Value::Null.into());
             return;
         }
@@ -263,10 +273,10 @@ fn rewrite_expr(expr: &mut Expr, database: &str) {
         // pg_get_expr: DuckDB only supports 2 args, PostgreSQL has 3-arg version
         // pg_get_expr(expr, relid, pretty) -> pg_get_expr(expr, relid)
         if base_name == "pg_get_expr" {
-            if let sqlparser::ast::FunctionArguments::List(arg_list) = &mut func.args {
-                if arg_list.args.len() == 3 {
-                    arg_list.args.truncate(2);
-                }
+            if let sqlparser::ast::FunctionArguments::List(arg_list) = &mut func.args
+                && arg_list.args.len() == 3
+            {
+                arg_list.args.truncate(2);
             }
             return;
         }
@@ -274,7 +284,11 @@ fn rewrite_expr(expr: &mut Expr, database: &str) {
 
     match expr {
         // Handle type casts (including ::regclass)
-        Expr::Cast { expr: inner, data_type, .. } => {
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => {
             // Check if it's a ::regclass cast - strip it
             if format!("{}", data_type).to_lowercase() == "regclass" {
                 // Replace the cast with just the inner expression
@@ -301,14 +315,18 @@ fn rewrite_schema_comparison(col_expr: &mut Expr, val_expr: &mut Expr) {
     let is_schema_col = match col_expr {
         Expr::Identifier(ident) => {
             let name = ident.value.to_lowercase();
-            matches!(name.as_str(),
-                "table_schema" | "schema_name" | "nspname" | "schemaname")
+            matches!(
+                name.as_str(),
+                "table_schema" | "schema_name" | "nspname" | "schemaname"
+            )
         }
         Expr::CompoundIdentifier(idents) => {
             if let Some(last) = idents.last() {
                 let name = last.value.to_lowercase();
-                matches!(name.as_str(),
-                    "table_schema" | "schema_name" | "nspname" | "schemaname")
+                matches!(
+                    name.as_str(),
+                    "table_schema" | "schema_name" | "nspname" | "schemaname"
+                )
             } else {
                 false
             }
@@ -318,10 +336,13 @@ fn rewrite_schema_comparison(col_expr: &mut Expr, val_expr: &mut Expr) {
 
     if is_schema_col {
         // Replace 'public' with 'main'
-        if let Expr::Value(ValueWithSpan { value: Value::SingleQuotedString(s), .. }) = val_expr {
-            if s.to_lowercase() == "public" {
-                *s = "main".to_string();
-            }
+        if let Expr::Value(ValueWithSpan {
+            value: Value::SingleQuotedString(s),
+            ..
+        }) = val_expr
+            && s.to_lowercase() == "public"
+        {
+            *s = "main".to_string();
         }
     }
 }
@@ -347,10 +368,13 @@ fn rewrite_catalog_comparison(col_expr: &mut Expr, val_expr: &mut Expr, database
 
     if is_catalog_col {
         // Replace database name with 'data'
-        if let Expr::Value(ValueWithSpan { value: Value::SingleQuotedString(s), .. }) = val_expr {
-            if s == database {
-                *s = "data".to_string();
-            }
+        if let Expr::Value(ValueWithSpan {
+            value: Value::SingleQuotedString(s),
+            ..
+        }) = val_expr
+            && s == database
+        {
+            *s = "data".to_string();
         }
     }
 }
@@ -384,10 +408,22 @@ fn rewrite_sql_string(sql: &str, database: &str) -> String {
 
     // Replace database/catalog name references with 'data'
     let catalog_replacements = [
-        (format!("table_catalog = '{}'", database), "table_catalog = 'data'".to_string()),
-        (format!("table_catalog='{}'", database), "table_catalog='data'".to_string()),
-        (format!("catalog_name = '{}'", database), "catalog_name = 'data'".to_string()),
-        (format!("catalog_name='{}'", database), "catalog_name='data'".to_string()),
+        (
+            format!("table_catalog = '{}'", database),
+            "table_catalog = 'data'".to_string(),
+        ),
+        (
+            format!("table_catalog='{}'", database),
+            "table_catalog='data'".to_string(),
+        ),
+        (
+            format!("catalog_name = '{}'", database),
+            "catalog_name = 'data'".to_string(),
+        ),
+        (
+            format!("catalog_name='{}'", database),
+            "catalog_name='data'".to_string(),
+        ),
     ];
 
     for (from, to) in catalog_replacements {
@@ -429,14 +465,14 @@ fn replace_function_with_null(sql: &str, func_name: &str) -> String {
 
     loop {
         let lower = result.to_lowercase();
-        if let Some(func_pos) = lower.find(&func_lower) {
-            if let Some(paren_start) = result[func_pos..].find('(') {
-                let paren_abs = func_pos + paren_start;
-                if let Some(paren_end) = find_matching_paren(&result[paren_abs..]) {
-                    let end_abs = paren_abs + paren_end + 1;
-                    result = format!("{}NULL{}", &result[..func_pos], &result[end_abs..]);
-                    continue;
-                }
+        if let Some(func_pos) = lower.find(&func_lower)
+            && let Some(paren_start) = result[func_pos..].find('(')
+        {
+            let paren_abs = func_pos + paren_start;
+            if let Some(paren_end) = find_matching_paren(&result[paren_abs..]) {
+                let end_abs = paren_abs + paren_end + 1;
+                result = format!("{}NULL{}", &result[..func_pos], &result[end_abs..]);
+                continue;
             }
         }
         break;

@@ -33,10 +33,7 @@ pub mod sqlstate {
 #[derive(Error, Debug)]
 pub enum MallardbError {
     #[error("DuckDB error: {message}")]
-    DuckDb {
-        message: String,
-        sqlstate: String,
-    },
+    DuckDb { message: String, sqlstate: String },
 
     #[error("Authentication failed: {0}")]
     Authentication(String),
@@ -97,9 +94,13 @@ fn classify_duckdb_error(message: &str) -> String {
 
     if lower.contains("syntax error") || lower.contains("parser error") {
         sqlstate::SYNTAX_ERROR.to_string()
-    } else if lower.contains("table") && (lower.contains("not found") || lower.contains("does not exist")) {
+    } else if lower.contains("table")
+        && (lower.contains("not found") || lower.contains("does not exist"))
+    {
         sqlstate::UNDEFINED_TABLE.to_string()
-    } else if lower.contains("column") && (lower.contains("not found") || lower.contains("does not exist")) {
+    } else if lower.contains("column")
+        && (lower.contains("not found") || lower.contains("does not exist"))
+    {
         sqlstate::UNDEFINED_COLUMN.to_string()
     } else if lower.contains("unique constraint") || lower.contains("duplicate key") {
         sqlstate::UNIQUE_VIOLATION.to_string()
@@ -145,7 +146,7 @@ mod tests {
     #[test]
     fn test_duckdb_error_classification_syntax() {
         let err = MallardbError::from_duckdb(
-            duckdb::Error::QueryReturnedNoRows // Using a simple error type
+            duckdb::Error::QueryReturnedNoRows, // Using a simple error type
         );
         // The error message won't contain "syntax error" so it will be generic
         assert!(!err.sqlstate().is_empty());
@@ -203,13 +204,19 @@ mod tests {
     #[test]
     fn test_internal_error_sqlstate() {
         let err = MallardbError::Internal("something went wrong".to_string());
-        assert_eq!(err.sqlstate(), sqlstate::SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION);
+        assert_eq!(
+            err.sqlstate(),
+            sqlstate::SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION
+        );
     }
 
     #[test]
     fn test_config_error_sqlstate() {
         let err = MallardbError::Config("bad config".to_string());
-        assert_eq!(err.sqlstate(), sqlstate::SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION);
+        assert_eq!(
+            err.sqlstate(),
+            sqlstate::SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION
+        );
     }
 
     #[test]
@@ -245,7 +252,9 @@ mod tests {
 
     #[test]
     fn test_classify_unique_violation() {
-        let sqlstate = classify_duckdb_error("Constraint Error: duplicate key value violates unique constraint");
+        let sqlstate = classify_duckdb_error(
+            "Constraint Error: duplicate key value violates unique constraint",
+        );
         assert_eq!(sqlstate, sqlstate::UNIQUE_VIOLATION);
     }
 
@@ -257,7 +266,9 @@ mod tests {
 
     #[test]
     fn test_classify_not_null_violation() {
-        let sqlstate = classify_duckdb_error("Constraint Error: NOT NULL constraint failed: column cannot be null");
+        let sqlstate = classify_duckdb_error(
+            "Constraint Error: NOT NULL constraint failed: column cannot be null",
+        );
         assert_eq!(sqlstate, sqlstate::NOT_NULL_VIOLATION);
     }
 

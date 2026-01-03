@@ -24,7 +24,10 @@ pub enum QueryOutput {
         rows: Vec<Vec<Option<String>>>,
     },
     /// Affected rows from INSERT/UPDATE/DELETE
-    Execute { affected_rows: usize, command: String },
+    Execute {
+        affected_rows: usize,
+        command: String,
+    },
     /// DDL completion
     Command { tag: String },
 }
@@ -102,7 +105,10 @@ impl DuckDbConnection {
         };
 
         // Prepare and execute with LIMIT 0 - this gets schema without data
-        let mut stmt = self.conn.prepare(&describe_sql).map_err(MallardbError::from_duckdb)?;
+        let mut stmt = self
+            .conn
+            .prepare(&describe_sql)
+            .map_err(MallardbError::from_duckdb)?;
         let rows = stmt.query([]).map_err(MallardbError::from_duckdb)?;
 
         // Get column info from the Arrow schema
@@ -147,11 +153,8 @@ fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
         execute_dml(conn, sql, "UPDATE")
     } else if upper.starts_with("DELETE") {
         execute_dml(conn, sql, "DELETE")
-    } else if upper.starts_with("CREATE") {
-        execute_ddl(conn, sql, extract_ddl_tag(&upper))
-    } else if upper.starts_with("DROP") {
-        execute_ddl(conn, sql, extract_ddl_tag(&upper))
-    } else if upper.starts_with("ALTER") {
+    } else if upper.starts_with("CREATE") || upper.starts_with("DROP") || upper.starts_with("ALTER")
+    {
         execute_ddl(conn, sql, extract_ddl_tag(&upper))
     } else if upper.starts_with("BEGIN")
         || upper.starts_with("START TRANSACTION")
@@ -227,7 +230,7 @@ fn execute_select(conn: &Connection, sql: &str) -> QueryResult {
     while let Some(row) = rows_result.next().map_err(MallardbError::from_duckdb)? {
         let mut row_data = Vec::with_capacity(col_count);
         for i in 0..col_count {
-            let value = get_value_as_string(&row, i);
+            let value = get_value_as_string(row, i);
             row_data.push(value);
         }
         rows.push(row_data);
@@ -265,7 +268,11 @@ fn get_value_as_string(row: &duckdb::Row, idx: usize) -> Option<String> {
         ValueRef::Date32(d) => Some(format_date(d)),
         ValueRef::Time64(unit, t) => Some(format_time(unit, t)),
         ValueRef::Timestamp(unit, ts) => Some(format_timestamp(unit, ts)),
-        ValueRef::Interval { months, days, nanos } => Some(format_interval(months, days, nanos)),
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => Some(format_interval(months, days, nanos)),
         ValueRef::Enum(enum_type, idx) => {
             use arrow::array::StringArray;
             let dict_values = match enum_type {
@@ -455,10 +462,10 @@ impl Backend {
         let db_path = config.db_path();
 
         // Ensure data directory exists
-        if let Some(parent) = db_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::error!("Failed to create data directory: {}", e);
-            }
+        if let Some(parent) = db_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::error!("Failed to create data directory: {}", e);
         }
 
         // Open the database once - all connections will be cloned from this
@@ -499,11 +506,18 @@ impl Backend {
                 SELECT unnest(string_split(str, delim)) AS unnest",
         ];
 
-        let macros: Vec<&str> = scalar_macros.iter().chain(table_macros.iter()).copied().collect();
+        let macros: Vec<&str> = scalar_macros
+            .iter()
+            .chain(table_macros.iter())
+            .copied()
+            .collect();
 
         for macro_sql in macros {
             if let Err(e) = conn.execute(macro_sql, []) {
-                debug!("Failed to create macro (may already exist): {} - {}", macro_sql, e);
+                debug!(
+                    "Failed to create macro (may already exist): {} - {}",
+                    macro_sql, e
+                );
             }
         }
     }
@@ -511,7 +525,10 @@ impl Backend {
     /// Create a new read-write connection for a client
     pub fn create_connection(&self) -> Result<DuckDbConnection, MallardbError> {
         // Clone from the base connection - this shares the underlying database
-        let conn = self.base_conn.try_clone().map_err(MallardbError::from_duckdb)?;
+        let conn = self
+            .base_conn
+            .try_clone()
+            .map_err(MallardbError::from_duckdb)?;
         Ok(DuckDbConnection { conn })
     }
 
@@ -584,7 +601,9 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        let result = conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
+        let result = conn
+            .execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
+            .unwrap();
         match result {
             QueryOutput::Command { tag } => {
                 assert_eq!(tag, "CREATE TABLE");
@@ -598,11 +617,17 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
-        let result = conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+        conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
+            .unwrap();
+        let result = conn
+            .execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+            .unwrap();
 
         match result {
-            QueryOutput::Execute { affected_rows, command } => {
+            QueryOutput::Execute {
+                affected_rows,
+                command,
+            } => {
                 assert_eq!(affected_rows, 2);
                 assert_eq!(command, "INSERT");
             }
@@ -615,12 +640,19 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
-        conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
-        let result = conn.execute("UPDATE users SET name = 'Charlie' WHERE id = 1").unwrap();
+        conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
+            .unwrap();
+        conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+            .unwrap();
+        let result = conn
+            .execute("UPDATE users SET name = 'Charlie' WHERE id = 1")
+            .unwrap();
 
         match result {
-            QueryOutput::Execute { affected_rows, command } => {
+            QueryOutput::Execute {
+                affected_rows,
+                command,
+            } => {
                 assert_eq!(affected_rows, 1);
                 assert_eq!(command, "UPDATE");
             }
@@ -633,12 +665,17 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
-        conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+        conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
+            .unwrap();
+        conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+            .unwrap();
         let result = conn.execute("DELETE FROM users WHERE id = 1").unwrap();
 
         match result {
-            QueryOutput::Execute { affected_rows, command } => {
+            QueryOutput::Execute {
+                affected_rows,
+                command,
+            } => {
                 assert_eq!(affected_rows, 1);
                 assert_eq!(command, "DELETE");
             }
@@ -731,9 +768,9 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        let result = conn.execute(
-            "SELECT 42::INTEGER AS i, 3.14::DOUBLE AS d, 100::BIGINT AS b"
-        ).unwrap();
+        let result = conn
+            .execute("SELECT 42::INTEGER AS i, 3.14::DOUBLE AS d, 100::BIGINT AS b")
+            .unwrap();
 
         match result {
             QueryOutput::Rows { rows, .. } => {
@@ -887,7 +924,9 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        let result = conn.execute("WITH cte AS (SELECT 1 AS num) SELECT * FROM cte").unwrap();
+        let result = conn
+            .execute("WITH cte AS (SELECT 1 AS num) SELECT * FROM cte")
+            .unwrap();
         match result {
             QueryOutput::Rows { rows, .. } => {
                 assert_eq!(rows.len(), 1);
@@ -901,7 +940,9 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        let result = conn.execute("SELECT 1 AS first, 2 AS second, 3 AS third").unwrap();
+        let result = conn
+            .execute("SELECT 1 AS first, 2 AS second, 3 AS third")
+            .unwrap();
         match result {
             QueryOutput::Rows { columns, .. } => {
                 assert_eq!(columns.len(), 3);

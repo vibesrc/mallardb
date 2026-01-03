@@ -54,18 +54,16 @@ pub fn handle_catalog_query(
     let lower = sql.to_lowercase();
 
     // Handle SHOW commands
-    if lower.starts_with("show ") {
-        if lower.contains("search_path") {
-            return Some(QueryOutput::Rows {
-                columns: vec![ColumnInfo {
-                    name: "search_path".to_string(),
-                    type_name: "TEXT".to_string(),
-                }],
-                rows: vec![vec![Some("main".to_string())]],
-            });
-        }
-        // Let other SHOW commands pass through to DuckDB
+    if lower.starts_with("show ") && lower.contains("search_path") {
+        return Some(QueryOutput::Rows {
+            columns: vec![ColumnInfo {
+                name: "search_path".to_string(),
+                type_name: "TEXT".to_string(),
+            }],
+            rows: vec![vec![Some("main".to_string())]],
+        });
     }
+    // Let other SHOW commands pass through to DuckDB
 
     // Handle common catalog queries
     if lower.contains("select version()") || (lower.contains("version()") && lower.len() < 50) {
@@ -172,7 +170,10 @@ pub fn handle_catalog_query(
     }
 
     // has_*_privilege functions - return true (permissive, DuckDB has no auth)
-    if lower.contains("has_table_privilege") || lower.contains("has_schema_privilege") || lower.contains("has_database_privilege") {
+    if lower.contains("has_table_privilege")
+        || lower.contains("has_schema_privilege")
+        || lower.contains("has_database_privilege")
+    {
         return Some(QueryOutput::Rows {
             columns: vec![ColumnInfo {
                 name: "has_privilege".to_string(),
@@ -212,20 +213,59 @@ fn handle_pg_database_query(database: &str) -> QueryOutput {
     // 'connection.database' as type, 'database' as detail
     QueryOutput::Rows {
         columns: vec![
-            ColumnInfo { name: "oid".to_string(), type_name: "INT4".to_string() },
-            ColumnInfo { name: "datname".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "datdba".to_string(), type_name: "INT4".to_string() },
-            ColumnInfo { name: "encoding".to_string(), type_name: "INT4".to_string() },
-            ColumnInfo { name: "datcollate".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "datctype".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "datistemplate".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "datallowconn".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "datconnlimit".to_string(), type_name: "INT4".to_string() },
+            ColumnInfo {
+                name: "oid".to_string(),
+                type_name: "INT4".to_string(),
+            },
+            ColumnInfo {
+                name: "datname".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "datdba".to_string(),
+                type_name: "INT4".to_string(),
+            },
+            ColumnInfo {
+                name: "encoding".to_string(),
+                type_name: "INT4".to_string(),
+            },
+            ColumnInfo {
+                name: "datcollate".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "datctype".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "datistemplate".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "datallowconn".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "datconnlimit".to_string(),
+                type_name: "INT4".to_string(),
+            },
             // Aliases expected by SQLTools
-            ColumnInfo { name: "label".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "database".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "type".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "detail".to_string(), type_name: "TEXT".to_string() },
+            ColumnInfo {
+                name: "label".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "database".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "type".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "detail".to_string(),
+                type_name: "TEXT".to_string(),
+            },
         ],
         rows: vec![vec![
             Some("1".to_string()),
@@ -238,10 +278,10 @@ fn handle_pg_database_query(database: &str) -> QueryOutput {
             Some("t".to_string()),
             Some("-1".to_string()),
             // Alias values
-            Some(database.to_string()), // label
-            Some(database.to_string()), // database
+            Some(database.to_string()),              // label
+            Some(database.to_string()),              // database
             Some("connection.database".to_string()), // type
-            Some("database".to_string()), // detail
+            Some("database".to_string()),            // detail
         ]],
     }
 }
@@ -249,14 +289,38 @@ fn handle_pg_database_query(database: &str) -> QueryOutput {
 fn handle_pg_roles_query(username: &str) -> QueryOutput {
     QueryOutput::Rows {
         columns: vec![
-            ColumnInfo { name: "oid".to_string(), type_name: "INT4".to_string() },
-            ColumnInfo { name: "rolname".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "rolsuper".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "rolinherit".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "rolcreaterole".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "rolcreatedb".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "rolcanlogin".to_string(), type_name: "BOOL".to_string() },
-            ColumnInfo { name: "rolconnlimit".to_string(), type_name: "INT4".to_string() },
+            ColumnInfo {
+                name: "oid".to_string(),
+                type_name: "INT4".to_string(),
+            },
+            ColumnInfo {
+                name: "rolname".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "rolsuper".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "rolinherit".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "rolcreaterole".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "rolcreatedb".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "rolcanlogin".to_string(),
+                type_name: "BOOL".to_string(),
+            },
+            ColumnInfo {
+                name: "rolconnlimit".to_string(),
+                type_name: "INT4".to_string(),
+            },
         ],
         rows: vec![vec![
             Some("10".to_string()),
@@ -272,7 +336,7 @@ fn handle_pg_roles_query(username: &str) -> QueryOutput {
 }
 
 fn handle_pg_settings_query(pg_version: &str) -> QueryOutput {
-    let settings = vec![
+    let settings = [
         ("server_version", pg_version),
         ("server_encoding", "UTF8"),
         ("client_encoding", "UTF8"),
@@ -285,18 +349,19 @@ fn handle_pg_settings_query(pg_version: &str) -> QueryOutput {
 
     let rows: Vec<Vec<Option<String>>> = settings
         .iter()
-        .map(|(name, setting)| {
-            vec![
-                Some(name.to_string()),
-                Some(setting.to_string()),
-            ]
-        })
+        .map(|(name, setting)| vec![Some(name.to_string()), Some(setting.to_string())])
         .collect();
 
     QueryOutput::Rows {
         columns: vec![
-            ColumnInfo { name: "name".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "setting".to_string(), type_name: "TEXT".to_string() },
+            ColumnInfo {
+                name: "name".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "setting".to_string(),
+                type_name: "TEXT".to_string(),
+            },
         ],
         rows,
     }
@@ -305,11 +370,26 @@ fn handle_pg_settings_query(pg_version: &str) -> QueryOutput {
 fn handle_pg_stat_activity_query(database: &str, username: &str) -> QueryOutput {
     QueryOutput::Rows {
         columns: vec![
-            ColumnInfo { name: "datid".to_string(), type_name: "INT4".to_string() },
-            ColumnInfo { name: "datname".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "pid".to_string(), type_name: "INT4".to_string() },
-            ColumnInfo { name: "usename".to_string(), type_name: "TEXT".to_string() },
-            ColumnInfo { name: "state".to_string(), type_name: "TEXT".to_string() },
+            ColumnInfo {
+                name: "datid".to_string(),
+                type_name: "INT4".to_string(),
+            },
+            ColumnInfo {
+                name: "datname".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "pid".to_string(),
+                type_name: "INT4".to_string(),
+            },
+            ColumnInfo {
+                name: "usename".to_string(),
+                type_name: "TEXT".to_string(),
+            },
+            ColumnInfo {
+                name: "state".to_string(),
+                type_name: "TEXT".to_string(),
+            },
         ],
         rows: vec![vec![
             Some("1".to_string()),
@@ -382,7 +462,9 @@ mod tests {
         assert!(!is_catalog_query("SELECT * FROM pg_type"));
         assert!(!is_catalog_query("SELECT * FROM pg_class"));
         assert!(!is_catalog_query("SELECT * FROM pg_namespace"));
-        assert!(!is_catalog_query("SELECT * FROM information_schema.schemata"));
+        assert!(!is_catalog_query(
+            "SELECT * FROM information_schema.schemata"
+        ));
     }
 
     #[test]
@@ -398,9 +480,15 @@ mod tests {
     #[test]
     fn test_is_catalog_query_has_privilege() {
         // Auth functions need interception (DuckDB has no auth)
-        assert!(is_catalog_query("SELECT has_table_privilege('users', 'SELECT')"));
-        assert!(is_catalog_query("SELECT has_schema_privilege('public', 'USAGE')"));
-        assert!(is_catalog_query("SELECT has_database_privilege('mydb', 'CONNECT')"));
+        assert!(is_catalog_query(
+            "SELECT has_table_privilege('users', 'SELECT')"
+        ));
+        assert!(is_catalog_query(
+            "SELECT has_schema_privilege('public', 'USAGE')"
+        ));
+        assert!(is_catalog_query(
+            "SELECT has_database_privilege('mydb', 'CONNECT')"
+        ));
     }
 
     #[test]
@@ -500,7 +588,8 @@ mod tests {
 
     #[test]
     fn test_handle_catalog_query_pg_database() {
-        let result = handle_catalog_query("SELECT * FROM pg_database", "testdb", "testuser", "15.0");
+        let result =
+            handle_catalog_query("SELECT * FROM pg_database", "testdb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { columns, rows } = result.unwrap() {
             assert!(columns.iter().any(|c| c.name == "datname"));
@@ -552,7 +641,8 @@ mod tests {
 
     #[test]
     fn test_handle_catalog_query_pg_stat_activity() {
-        let result = handle_catalog_query("SELECT * FROM pg_stat_activity", "mydb", "testuser", "15.0");
+        let result =
+            handle_catalog_query("SELECT * FROM pg_stat_activity", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { columns, rows } = result.unwrap() {
             assert!(columns.iter().any(|c| c.name == "datname"));
@@ -576,13 +666,19 @@ mod tests {
     #[test]
     fn test_handle_catalog_query_pg_description() {
         // pg_description now passes through to DuckDB's built-in pg_catalog.pg_description
-        let result = handle_catalog_query("SELECT * FROM pg_description", "mydb", "testuser", "15.0");
+        let result =
+            handle_catalog_query("SELECT * FROM pg_description", "mydb", "testuser", "15.0");
         assert!(result.is_none());
     }
 
     #[test]
     fn test_handle_catalog_query_has_privilege() {
-        let result = handle_catalog_query("SELECT has_table_privilege('users', 'SELECT')", "mydb", "testuser", "15.0");
+        let result = handle_catalog_query(
+            "SELECT has_table_privilege('users', 'SELECT')",
+            "mydb",
+            "testuser",
+            "15.0",
+        );
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
             assert_eq!(rows[0][0], Some("t".to_string())); // Always returns true
@@ -593,7 +689,8 @@ mod tests {
 
     #[test]
     fn test_handle_catalog_query_pg_encoding_to_char() {
-        let result = handle_catalog_query("SELECT pg_encoding_to_char(6)", "mydb", "testuser", "15.0");
+        let result =
+            handle_catalog_query("SELECT pg_encoding_to_char(6)", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
             assert_eq!(rows[0][0], Some("UTF8".to_string()));
@@ -605,14 +702,20 @@ mod tests {
     #[test]
     fn test_handle_catalog_query_size_functions() {
         // Size functions now pass through to DuckDB natively
-        let result = handle_catalog_query("SELECT pg_total_relation_size('users')", "mydb", "testuser", "15.0");
+        let result = handle_catalog_query(
+            "SELECT pg_total_relation_size('users')",
+            "mydb",
+            "testuser",
+            "15.0",
+        );
         assert!(result.is_none());
     }
 
     #[test]
     fn test_handle_catalog_query_pg_size_pretty() {
         // pg_size_pretty now passes through to DuckDB
-        let result = handle_catalog_query("SELECT pg_size_pretty(1024)", "mydb", "testuser", "15.0");
+        let result =
+            handle_catalog_query("SELECT pg_size_pretty(1024)", "mydb", "testuser", "15.0");
         assert!(result.is_none());
     }
 
@@ -626,7 +729,12 @@ mod tests {
     #[test]
     fn test_handle_catalog_query_pg_table_is_visible() {
         // pg_table_is_visible now passes through to DuckDB
-        let result = handle_catalog_query("SELECT pg_table_is_visible(12345)", "mydb", "testuser", "15.0");
+        let result = handle_catalog_query(
+            "SELECT pg_table_is_visible(12345)",
+            "mydb",
+            "testuser",
+            "15.0",
+        );
         assert!(result.is_none());
     }
 

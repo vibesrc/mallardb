@@ -3,9 +3,13 @@
 //! mallardb presents a fully PostgreSQL-compatible interface to clients while
 //! internally executing all queries against DuckDB.
 
+// DuckDB Connection is not Send+Sync, but we create per-connection handlers
+// that don't share state across threads, so this is safe.
+#![allow(clippy::arc_with_non_send_sync)]
+
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 use tokio::net::TcpListener;
@@ -59,7 +63,11 @@ async fn run_scripts(backend: &Backend, dir: &Path, description: &str) {
     scripts.sort();
 
     for script in scripts {
-        info!("Running {} script: {:?}", description, script.file_name().unwrap_or_default());
+        info!(
+            "Running {} script: {:?}",
+            description,
+            script.file_name().unwrap_or_default()
+        );
 
         let sql = match std::fs::read_to_string(&script) {
             Ok(s) => s,
@@ -92,8 +100,7 @@ async fn main() {
     let args = Args::parse();
 
     // Initialize logging - respects RUST_LOG env var, defaults to info
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
@@ -104,10 +111,10 @@ async fn main() {
         Ok(c) => Arc::new(c.with_cli_overrides(args.data_dir, args.port, args.host)),
         Err(e) => {
             eprintln!("Configuration error: {}", e);
-            eprintln!("");
+            eprintln!();
             eprintln!("Required environment variables:");
             eprintln!("  MALLARDB_PASSWORD (or POSTGRES_PASSWORD)");
-            eprintln!("");
+            eprintln!();
             eprintln!("Optional environment variables:");
             eprintln!("  MALLARDB_USER          - Username (default: mallard)");
             eprintln!("  MALLARDB_DB            - Database name (default: $MALLARDB_USER)");
@@ -116,7 +123,7 @@ async fn main() {
             eprintln!("  MALLARDB_HOST          - Listen address (default: 0.0.0.0)");
             eprintln!("  MALLARDB_PORT          - Listen port (default: 5432)");
             eprintln!("  MALLARDB_DATA_DIR      - Data directory (default: ./data)");
-            eprintln!("");
+            eprintln!();
             eprintln!("Note: POSTGRES_* variants are also accepted for compatibility.");
             std::process::exit(1);
         }
@@ -125,7 +132,14 @@ async fn main() {
     info!("Starting mallardb v0.1.0");
     info!("Database: {}", config.postgres_db);
     info!("Data path: {:?}", config.db_path());
-    info!("Read-only role: {}", if config.has_readonly_role() { "enabled" } else { "disabled" });
+    info!(
+        "Read-only role: {}",
+        if config.has_readonly_role() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     // Check if this is first start (database doesn't exist)
     let is_first_start = !config.db_path().exists();

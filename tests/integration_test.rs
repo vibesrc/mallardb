@@ -77,7 +77,10 @@ mod server_tests {
         });
 
         // Simple query
-        let rows = client.query("SELECT 1 as num", &[]).await.expect("Query failed");
+        let rows = client
+            .query("SELECT 1 as num", &[])
+            .await
+            .expect("Query failed");
         assert_eq!(rows.len(), 1);
         let num: i32 = rows[0].get("num");
         assert_eq!(num, 1);
@@ -95,7 +98,10 @@ mod server_tests {
             }
         });
 
-        let rows = client.query("SELECT version()", &[]).await.expect("Query failed");
+        let rows = client
+            .query("SELECT version()", &[])
+            .await
+            .expect("Query failed");
         assert_eq!(rows.len(), 1);
         let version: &str = rows[0].get(0);
         assert!(version.contains("PostgreSQL"));
@@ -115,7 +121,10 @@ mod server_tests {
             }
         });
 
-        let rows = client.query("SELECT current_database()", &[]).await.expect("Query failed");
+        let rows = client
+            .query("SELECT current_database()", &[])
+            .await
+            .expect("Query failed");
         assert_eq!(rows.len(), 1);
         let db: &str = rows[0].get(0);
         assert_eq!(db, expected_db);
@@ -138,7 +147,10 @@ mod server_tests {
 
         // Create table
         client
-            .execute("CREATE TABLE IF NOT EXISTS test_users (id INTEGER PRIMARY KEY, name VARCHAR)", &[])
+            .execute(
+                "CREATE TABLE IF NOT EXISTS test_users (id INTEGER PRIMARY KEY, name VARCHAR)",
+                &[],
+            )
             .await
             .expect("Create table failed");
 
@@ -209,7 +221,10 @@ mod server_tests {
             .execute("INSERT INTO tx_test VALUES (2)", &[])
             .await
             .expect("Insert failed");
-        client.execute("ROLLBACK", &[]).await.expect("ROLLBACK failed");
+        client
+            .execute("ROLLBACK", &[])
+            .await
+            .expect("ROLLBACK failed");
 
         // Verify rollback worked
         let rows = client
@@ -242,7 +257,7 @@ mod server_tests {
             .query(
                 "SELECT
                     42::INTEGER as int_val,
-                    3.14::DOUBLE as float_val,
+                    1.5::DOUBLE as float_val,
                     true as bool_val,
                     'hello' as text_val",
                 &[],
@@ -257,7 +272,7 @@ mod server_tests {
         let text_val: &str = rows[0].get("text_val");
 
         assert_eq!(int_val, 42);
-        assert!((float_val - 3.14).abs() < 0.001);
+        assert!((float_val - 1.5).abs() < 0.001);
         assert!(bool_val);
         assert_eq!(text_val, "hello");
     }
@@ -300,11 +315,16 @@ mod server_tests {
         });
 
         // Clean up from any previous runs
-        let _ = client.execute("DROP TABLE IF EXISTS info_schema_test", &[]).await;
+        let _ = client
+            .execute("DROP TABLE IF EXISTS info_schema_test", &[])
+            .await;
 
         // Create a test table first
         client
-            .execute("CREATE TABLE IF NOT EXISTS info_schema_test (id INTEGER)", &[])
+            .execute(
+                "CREATE TABLE IF NOT EXISTS info_schema_test (id INTEGER)",
+                &[],
+            )
             .await
             .expect("Create table failed");
 
@@ -343,7 +363,9 @@ mod server_tests {
         assert!(result.is_err());
 
         // Test undefined table
-        let result = client.query("SELECT * FROM nonexistent_table_xyz", &[]).await;
+        let result = client
+            .query("SELECT * FROM nonexistent_table_xyz", &[])
+            .await;
         assert!(result.is_err());
     }
 
@@ -360,11 +382,16 @@ mod server_tests {
         });
 
         // Clean up from any previous runs
-        let _ = client.execute("DROP TABLE IF EXISTS rollback_test", &[]).await;
+        let _ = client
+            .execute("DROP TABLE IF EXISTS rollback_test", &[])
+            .await;
 
         // Create table
         client
-            .execute("CREATE TABLE IF NOT EXISTS rollback_test (id INTEGER PRIMARY KEY)", &[])
+            .execute(
+                "CREATE TABLE IF NOT EXISTS rollback_test (id INTEGER PRIMARY KEY)",
+                &[],
+            )
             .await
             .expect("Create table failed");
 
@@ -377,7 +404,10 @@ mod server_tests {
         // The auto-rollback should have happened, so we should be able to continue
         // without "current transaction is aborted" errors
         let result = client.query("SELECT 1 as num", &[]).await;
-        assert!(result.is_ok(), "Should be able to query after auto-rollback");
+        assert!(
+            result.is_ok(),
+            "Should be able to query after auto-rollback"
+        );
 
         // Cleanup
         client
