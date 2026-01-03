@@ -381,7 +381,6 @@ fn format_interval(months: i32, days: i32, nanos: i64) -> String {
 
 /// Format a List/Array value from Arrow
 fn format_list(list_type: duckdb::types::ListType, row_idx: usize) -> String {
-    use duckdb::arrow::array::Array;
     match list_type {
         duckdb::types::ListType::Regular(list_array) => {
             let value = list_array.value(row_idx);
@@ -396,14 +395,12 @@ fn format_list(list_type: duckdb::types::ListType, row_idx: usize) -> String {
 
 /// Format a fixed-size array value
 fn format_fixed_list(array: &duckdb::arrow::array::FixedSizeListArray, row_idx: usize) -> String {
-    use duckdb::arrow::array::Array;
     let value = array.value(row_idx);
     format_arrow_array(&value)
 }
 
 /// Format a Map value from Arrow
 fn format_map(map_array: &duckdb::arrow::array::MapArray, row_idx: usize) -> String {
-    use duckdb::arrow::array::Array;
     let entries = map_array.value(row_idx);
     // Map entries are stored as a struct array with "key" and "value" fields
     format!("{{{}}}", format_arrow_array(&entries))
@@ -428,7 +425,6 @@ fn format_union(union_array: &duckdb::arrow::array::ArrayRef, row_idx: usize) ->
 
 /// Format an Arrow array as a string (for list contents)
 fn format_arrow_array(array: &dyn duckdb::arrow::array::Array) -> String {
-    use duckdb::arrow::array::Array;
     let mut values = Vec::new();
     for i in 0..array.len() {
         values.push(format_arrow_value_dyn(array, i));
