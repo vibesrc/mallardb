@@ -2,19 +2,19 @@
 
 ## 10.1 Overview
 
-mallardb is configured primarily through environment variables, following PostgreSQL Docker image conventions for compatibility. This section specifies all configuration options and their behaviors.
+mallardb is configured primarily through environment variables. It supports both `POSTGRES_*` (for Docker compatibility) and `MALLARDB_*` prefixes. When both are set, `MALLARDB_*` takes precedence.
 
 ## 10.2 Environment Variables
 
-### 10.2.1 Authentication (Required)
+### 10.2.1 Authentication
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_USER` | Yes | - | Username for read-write role |
-| `POSTGRES_PASSWORD` | Yes | - | Password for read-write role |
-| `POSTGRES_READONLY_USER` | No | - | Username for read-only role |
-| `POSTGRES_READONLY_PASSWORD` | No | - | Password for read-only role |
-| `POSTGRES_DB` | No | `$POSTGRES_USER` | Database name |
+| Variable | Alternative | Required | Default | Description |
+|----------|-------------|----------|---------|-------------|
+| `MALLARDB_USER` | `POSTGRES_USER` | No | `mallard` | Username for read-write role |
+| `MALLARDB_PASSWORD` | `POSTGRES_PASSWORD` | Yes | - | Password for read-write role |
+| `MALLARDB_READONLY_USER` | `POSTGRES_READONLY_USER` | No | - | Username for read-only role |
+| `MALLARDB_READONLY_PASSWORD` | `POSTGRES_READONLY_PASSWORD` | No | - | Password for read-only role |
+| `MALLARDB_DB` | `POSTGRES_DB` | No | Same as user | Database name |
 
 ### 10.2.2 Network
 
@@ -37,6 +37,7 @@ mallardb is configured primarily through environment variables, following Postgr
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `MALLARDB_DATABASE` | No | `./data/mallard.db` | Database file path |
+| `MALLARDB_EXTENSION_DIRECTORY` | No | `./extensions` | DuckDB extension directory |
 
 ### 10.2.5 Performance
 

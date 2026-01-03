@@ -1,8 +1,8 @@
 # mallardb Specification
 
-**Version:** 0.1.0-draft  
-**Status:** Draft  
-**Last Updated:** 2026-01-01
+**Version:** 0.1.0-draft
+**Status:** Draft
+**Last Updated:** 2026-01-03
 
 ## Abstract
 

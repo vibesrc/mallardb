@@ -28,13 +28,14 @@ mallardb operates as a protocol translation layer between PostgreSQL clients and
 │                              │                                   │
 │                              ▼                                   │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │                Per-Query DuckDB Connections               │  │
+│  │               Per-Client DuckDB Connections               │  │
 │  │                                                           │  │
-│  │   Each query gets a fresh connection. DuckDB handles      │  │
-│  │   write serialization internally via WAL and locking.     │  │
+│  │   Each client gets a persistent connection cloned from    │  │
+│  │   a base connection. DuckDB handles write serialization   │  │
+│  │   internally via MVCC and optimistic concurrency control. │  │
 │  │                                                           │  │
 │  │   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐        │  │
-│  │   │  Conn   │ │  Conn   │ │  Conn   │ │  Conn   │        │  │
+│  │   │ Client1 │ │ Client2 │ │ Client3 │ │ Client4 │        │  │
 │  │   │  (R/W)  │ │  (R/W)  │ │  (R/O)  │ │  (R/O)  │        │  │
 │  │   └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘        │  │
 │  │        │           │           │           │              │  │
@@ -43,12 +44,12 @@ mallardb operates as a protocol translation layer between PostgreSQL clients and
 │                             ▼                                   │
 │                    ┌─────────────────┐                          │
 │                    │   DuckDB File   │                          │
-│                    │   (data.db)     │                          │
+│                    │  (mallard.db)   │                          │
 │                    └─────────────────┘                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-*Figure 3-1 illustrates the layered architecture of mallardb, showing protocol handling, query routing, and per-connection DuckDB access.*
+*Figure 3-1 illustrates the layered architecture of mallardb, showing protocol handling, query routing, and per-client DuckDB connections.*
 
 ## 3.2 Components
 
@@ -112,12 +113,12 @@ The query router determines which DuckDB connection handles each query based on 
 
 The router does NOT parse queries to determine read vs write intent. Routing is purely role-based.
 
-### 3.2.5 Per-Connection Model
+### 3.2.5 Per-Client Connection Model
 
-Each query creates a fresh DuckDB connection:
+Each client connection maintains a persistent DuckDB connection for its session:
 
-- **Write connections**: Full read-write access, DuckDB manages serialization
-- **Read connections**: Read-only mode, fully concurrent
+- **Write role clients**: Get a connection cloned from the base connection with full read-write access
+- **Read role clients**: Get a dedicated connection opened with `AccessMode::ReadOnly`
 
 This design leverages DuckDB's native concurrency model:
 
@@ -125,8 +126,10 @@ This design leverages DuckDB's native concurrency model:
 
 Implementation details:
 
-- DuckDB uses `wait_for_write_lock` internally to serialize writes
-- Read connections use `AccessMode::ReadOnly` flag
+- A base DuckDB connection is created at server startup
+- Write clients clone this base connection (DuckDB handles serialization internally)
+- Read clients get fresh read-only connections
+- Each connection is wrapped in a `Mutex` for thread-safety (DuckDB `Connection` is not `Sync`)
 - Each connection has its own transaction context (no cross-client interference)
 - Auto-rollback on error prevents "transaction aborted" deadlock states
 
@@ -139,16 +142,16 @@ sequenceDiagram
     participant C3 as Client 3 (read)
     participant D as DuckDB
 
-    C1->>D: INSERT INTO users... (new R/W conn)
-    C2->>D: UPDATE orders... (new R/W conn)
-    C3->>D: SELECT * FROM... (new R/O conn)
-    Note over D: DuckDB serializes<br/>C1 and C2 writes<br/>C3 reads concurrently
+    C1->>D: INSERT INTO users... (persistent R/W conn)
+    C2->>D: UPDATE orders... (persistent R/W conn)
+    C3->>D: SELECT * FROM... (persistent R/O conn)
+    Note over D: DuckDB serializes<br/>C1 and C2 writes via MVCC<br/>C3 reads concurrently
     D-->>C3: Result rows
     D-->>C1: CommandComplete
     D-->>C2: CommandComplete
 ```
 
-*Figure 3-2 shows how concurrent queries are handled with DuckDB managing write serialization internally.*
+*Figure 3-2 shows how concurrent queries are handled with DuckDB managing write serialization internally via MVCC.*
 
 ## 3.3 Connection Lifecycle
 
@@ -176,16 +179,20 @@ stateDiagram-v2
 
 ## 3.4 Data Directory Structure
 
-mallardb stores all persistent data in a single directory:
+mallardb stores all persistent data in a configurable directory structure:
 
 ```
-/var/lib/mallardb/
-├── data.db           # Primary DuckDB database file
-├── data.db.wal       # DuckDB write-ahead log (if enabled)
-└── mallardb.conf     # Optional configuration (future)
+./data/                    # Default data directory (configurable via MALLARDB_DATABASE)
+├── mallard.db             # Primary DuckDB database file
+├── mallard.db.wal         # DuckDB write-ahead log (if enabled)
+
+./extensions/              # Default extension directory (configurable via MALLARDB_EXTENSION_DIRECTORY)
+├── *.duckdb_extension     # DuckDB extension files
 ```
 
 The data directory MUST be:
 - Writable by the mallardb process
 - Mounted as a Docker volume for persistence
 - Owned by the mallardb process user (UID configurable)
+
+The default database path is `./data/mallard.db` and can be overridden with `MALLARDB_DATABASE`.

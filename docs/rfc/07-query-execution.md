@@ -2,7 +2,7 @@
 
 ## 7.1 Overview
 
-Query execution in mallardb uses a per-connection concurrency model where each client gets its own DuckDB connection. DuckDB handles write serialization internally via its WAL and locking mechanisms. This section specifies the routing logic, concurrency model, and execution semantics.
+Query execution in mallardb uses a per-client concurrency model where each client maintains a persistent DuckDB connection for its session. DuckDB handles write serialization internally via MVCC and optimistic concurrency control. This section specifies the routing logic, concurrency model, SQL rewriting, and execution semantics.
 
 ## 7.2 Query Routing
 
@@ -51,45 +51,46 @@ Consequence: A write role connection sending `SELECT 1` uses a read-write connec
 
 ## 7.3 Connection Model
 
-### 7.3.1 Per-Query Connections
+### 7.3.1 Per-Client Connections
 
-Each query creates a fresh DuckDB connection:
+Each client maintains a persistent DuckDB connection for its session:
 
 ```rust
 // Conceptual structure
-pub struct DuckDbConnection {
-    conn: duckdb::Connection,
-}
-
-impl DuckDbConnection {
-    pub fn new(db_path: &Path) -> Result<Self, Error> {
-        let conn = Connection::open(db_path)?;
-        Ok(DuckDbConnection { conn })
-    }
-
-    pub fn new_readonly(db_path: &Path) -> Result<Self, Error> {
-        let conn = Connection::open_with_flags(
-            db_path,
-            Config::default().access_mode(AccessMode::ReadOnly)?,
-        )?;
-        Ok(DuckDbConnection { conn })
-    }
+pub struct MallardbHandler {
+    // Persistent connection for this client, wrapped in Mutex for thread-safety
+    conn: Arc<Mutex<DuckDbConnection>>,
+    session: SessionInfo,
 }
 ```
+
+**Write role clients**: Get a connection cloned from the base connection with full read-write access.
+
+**Read role clients**: Get a new connection opened with `AccessMode::ReadOnly`.
 
 ### 7.3.2 DuckDB Concurrency Model
 
 DuckDB manages write serialization internally:
 
-- **Multiple connections**: Each client can have its own connection
-- **Write serialization**: DuckDB uses `wait_for_write_lock` to serialize writes
+- **Multiple connections**: Each client maintains its own persistent connection
+- **Write serialization**: DuckDB uses MVCC and optimistic concurrency control
 - **Read concurrency**: Multiple readers can execute simultaneously
-- **MVCC**: Readers see consistent snapshots without blocking writers
+- **Snapshot isolation**: Readers see consistent snapshots without blocking writers
 
 This matches DuckDB's documented concurrency model where:
 > Within a single process, DuckDB supports multiple writer connections using a combination of MVCC and optimistic concurrency control.
 
-### 7.3.3 Auto-Rollback on Error
+### 7.3.3 Thread Safety
+
+DuckDB's `Connection` is not `Sync`, so each connection is wrapped in a `Mutex`:
+
+```rust
+pub struct DuckDbConnection {
+    conn: Mutex<duckdb::Connection>,
+}
+```
+
+### 7.3.4 Auto-Rollback on Error
 
 To prevent "transaction aborted" deadlock states, mallardb automatically rolls back after any error:
 
@@ -123,27 +124,67 @@ If a read role attempts a write operation:
 
 ## 7.5 Catalog Query Handling
 
-Before routing to DuckDB, mallardb checks if the query targets system catalogs:
+mallardb uses a **minimal interception** approach. Most catalog queries pass through to DuckDB's native `pg_catalog` implementation.
 
 ### 7.5.1 Detection
 
-Catalog queries are detected by:
-1. Quick regex scan for `pg_catalog`, `information_schema`
-2. If matched, parse query to confirm table references
-3. Route to catalog emulator if confirmed
+Catalog queries requiring interception are detected by checking for:
+- PostgreSQL-specific functions (`version()`, `current_database()`, `pg_backend_pid()`, etc.)
+- Auth-related queries (`current_user`, `pg_roles`, `has_*_privilege()`)
+- Session info (`pg_stat_activity`, `pg_settings`)
+- Database-level info (`pg_database`)
 
-### 7.5.2 Emulator Execution
+### 7.5.2 Passthrough
 
-The catalog emulator:
-1. May execute translated queries against DuckDB (via same routing path)
-2. May synthesize results entirely
-3. May combine DuckDB results with synthetic data
+Most `pg_catalog` and `information_schema` queries pass through directly to DuckDB:
+- `pg_type`, `pg_class`, `pg_namespace`, `pg_attribute`
+- `pg_proc`, `pg_index`, `pg_constraint`
+- `information_schema.tables`, `information_schema.columns`
 
-### 7.5.3 Passthrough
+### 7.5.3 Synthesized Responses
 
-Queries that reference catalog schemas but can be handled by DuckDB's native information_schema are passed through with minimal modification.
+When interception is needed, mallardb synthesizes PostgreSQL-compatible responses (see [Section 6](./06-catalog.md) for details).
 
-## 7.6 Query Timeout
+## 7.6 SQL Rewriting
+
+mallardb automatically rewrites certain SQL patterns for DuckDB compatibility.
+
+### 7.6.1 Schema Rewriting
+
+PostgreSQL's default `public` schema is rewritten to DuckDB's `main`:
+
+```sql
+-- Input (PostgreSQL style)
+SELECT * FROM t WHERE table_schema = 'public'
+
+-- Output (DuckDB compatible)
+SELECT * FROM t WHERE table_schema = 'main'
+```
+
+This also applies to `nspname = 'public'` in pg_namespace queries.
+
+### 7.6.2 AST-Based Rewriting
+
+SQL rewriting uses an AST-based approach with string fallback:
+
+1. Parse SQL using `sqlparser`
+2. Walk AST to find schema references
+3. Transform `'public'` → `'main'`
+4. Fall back to string-based rewriting if parsing fails
+
+### 7.6.3 Compatibility Macros
+
+DuckDB is configured with PostgreSQL compatibility macros at startup:
+
+```sql
+CREATE MACRO IF NOT EXISTS array_lower(arr, dim) AS 1;
+CREATE MACRO IF NOT EXISTS array_upper(arr, dim) AS len(arr);
+CREATE MACRO IF NOT EXISTS current_setting(name) AS
+    CASE WHEN name = 'search_path' THEN 'main' ELSE NULL END;
+CREATE MACRO IF NOT EXISTS quote_ident(s) AS '"' || s || '"';
+```
+
+## 7.7 Query Timeout
 
 mallardb SHOULD support query timeouts:
 
@@ -156,11 +197,11 @@ When a query times out:
 - Return SQLSTATE `57014` (query_canceled)
 - Message: "canceling statement due to statement timeout"
 
-## 7.7 DuckDB Feature Access
+## 7.8 DuckDB Feature Access
 
 All DuckDB features are accessible through normal queries:
 
-### 7.7.1 File Operations
+### 7.8.1 File Operations
 
 ```sql
 -- Read Parquet
@@ -173,7 +214,7 @@ COPY table TO 'output.parquet' (FORMAT PARQUET);
 SELECT * FROM read_csv_auto('data.csv');
 ```
 
-### 7.7.2 Extensions
+### 7.8.2 Extensions
 
 ```sql
 -- Load extension
@@ -184,7 +225,7 @@ LOAD httpfs;
 SELECT * FROM read_parquet('s3://bucket/file.parquet');
 ```
 
-### 7.7.3 DuckDB-Specific Syntax
+### 7.8.3 DuckDB-Specific Syntax
 
 DuckDB syntax passes through unchanged:
 
@@ -199,7 +240,7 @@ SELECT * REPLACE (upper(name) AS name) FROM users;
 SELECT * FROM t1 POSITIONAL JOIN t2;
 ```
 
-## 7.8 Result Streaming
+## 7.9 Result Streaming
 
 For large result sets, mallardb SHOULD stream results:
 
@@ -214,7 +255,7 @@ For large result sets, mallardb SHOULD stream results:
 
 This prevents memory exhaustion for queries returning millions of rows.
 
-## 7.9 Error Translation
+## 7.10 Error Translation
 
 DuckDB errors are translated to PostgreSQL format:
 

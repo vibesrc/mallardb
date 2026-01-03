@@ -6,30 +6,32 @@ mallardb implements a simplified authentication model with two predefined roles:
 
 ## 5.2 Role Configuration
 
+mallardb supports both `POSTGRES_*` and `MALLARDB_*` environment variable prefixes. When both are set, `MALLARDB_*` takes precedence.
+
 ### 5.2.1 Write Role
 
 The write role is configured via:
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `POSTGRES_USER` | Yes | Username for read-write access |
-| `POSTGRES_PASSWORD` | Yes | Password for read-write user |
+| Variable | Alternative | Required | Default | Description |
+|----------|-------------|----------|---------|-------------|
+| `MALLARDB_USER` | `POSTGRES_USER` | No | `mallard` | Username for read-write access |
+| `MALLARDB_PASSWORD` | `POSTGRES_PASSWORD` | Yes | - | Password for read-write user |
 
 The write role:
 - Has full read and write access to all objects
-- Routes all queries through the shared writer
+- Gets a DuckDB connection cloned from the base connection
 - Can execute DDL, DML, and queries
 
 ### 5.2.2 Read Role
 
 The read role is configured via:
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `POSTGRES_READONLY_USER` | No | Username for read-only access |
-| `POSTGRES_READONLY_PASSWORD` | No | Password for read-only user |
+| Variable | Alternative | Required | Description |
+|----------|-------------|----------|-------------|
+| `MALLARDB_READONLY_USER` | `POSTGRES_READONLY_USER` | No | Username for read-only access |
+| `MALLARDB_READONLY_PASSWORD` | `POSTGRES_READONLY_PASSWORD` | No | Password for read-only user |
 
-If `POSTGRES_READONLY_USER` is not set, read-only access is disabled.
+If readonly user is not configured, read-only access is disabled.
 
 The read role:
 - Can only execute read operations (SELECT, SHOW, DESCRIBE, etc.)
@@ -40,9 +42,9 @@ The read role:
 
 The default database name is configured via:
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_DB` | No | Same as `POSTGRES_USER` | Database name for connection |
+| Variable | Alternative | Required | Default | Description |
+|----------|-------------|----------|---------|-------------|
+| `MALLARDB_DB` | `POSTGRES_DB` | No | Same as username | Database name for connection |
 
 Since mallardb supports only a single database, this value is used for:
 - Validating the `database` parameter in `StartupMessage`
@@ -51,28 +53,22 @@ Since mallardb supports only a single database, this value is used for:
 
 ## 5.3 Authentication Methods
 
-### 5.3.1 Cleartext Password (Initial Implementation)
+### 5.3.1 MD5 Password (Implemented)
 
-The initial implementation uses cleartext password authentication:
+mallardb uses MD5 password authentication, compatible with PostgreSQL clients:
 
-1. Server sends `AuthenticationCleartextPassword`
-2. Client sends `PasswordMessage` with password
-3. Server compares against configured credential
+1. Server sends `AuthenticationMD5Password` with 4-byte random salt
+2. Client sends `PasswordMessage` with `md5(md5(password + username) + salt)`
+3. Server validates hash against expected value
 4. Server sends `AuthenticationOk` or `ErrorResponse`
 
-> **Note:** Cleartext password is acceptable when TLS is enabled. Production deployments SHOULD use TLS.
+The MD5 hash computation follows PostgreSQL's format exactly, ensuring compatibility with all standard PostgreSQL client libraries.
 
-### 5.3.2 MD5 Password (Future)
+> **Security Note:** MD5 is considered cryptographically weak. For production deployments, enable TLS to encrypt credentials in transit.
 
-MD5 authentication MAY be implemented in future versions:
+### 5.3.2 SCRAM-SHA-256 (Future)
 
-1. Server sends `AuthenticationMD5Password` with 4-byte salt
-2. Client sends `PasswordMessage` with `md5(md5(password + user) + salt)`
-3. Server validates hash
-
-### 5.3.3 SCRAM-SHA-256 (Future)
-
-SCRAM-SHA-256 authentication MAY be implemented in future versions following RFC 5802.
+SCRAM-SHA-256 authentication MAY be implemented in future versions following RFC 5802 for stronger security.
 
 ## 5.4 Authentication Flow
 
@@ -82,31 +78,31 @@ SCRAM-SHA-256 authentication MAY be implemented in future versions following RFC
 sequenceDiagram
     participant C as Client
     participant S as mallardb
-    
+
     C->>S: StartupMessage (user, database)
-    
-    alt User matches POSTGRES_USER
-        S->>C: AuthenticationCleartextPassword
-        C->>S: PasswordMessage
-        alt Password matches POSTGRES_PASSWORD
+
+    alt User matches write role
+        S->>C: AuthenticationMD5Password (salt)
+        C->>S: PasswordMessage (md5 hash)
+        alt Hash matches expected
             S->>C: AuthenticationOk
             S->>C: ParameterStatus (multiple)
             S->>C: BackendKeyData
             S->>C: ReadyForQuery ('I')
-            Note over S: Route to Writer
-        else Password mismatch
+            Note over S: Clone R/W connection
+        else Hash mismatch
             S->>C: ErrorResponse (28P01)
         end
-    else User matches POSTGRES_READONLY_USER
-        S->>C: AuthenticationCleartextPassword
-        C->>S: PasswordMessage
-        alt Password matches POSTGRES_READONLY_PASSWORD
+    else User matches read role
+        S->>C: AuthenticationMD5Password (salt)
+        C->>S: PasswordMessage (md5 hash)
+        alt Hash matches expected
             S->>C: AuthenticationOk
             S->>C: ParameterStatus (multiple)
             S->>C: BackendKeyData
             S->>C: ReadyForQuery ('I')
-            Note over S: Create Reader
-        else Password mismatch
+            Note over S: Create R/O connection
+        else Hash mismatch
             S->>C: ErrorResponse (28P01)
         end
     else Unknown user
@@ -114,7 +110,7 @@ sequenceDiagram
     end
 ```
 
-*Figure 5-1 shows the authentication sequence for both write and read roles.*
+*Figure 5-1 shows the MD5 authentication sequence for both write and read roles.*
 
 ## 5.5 Error Codes
 

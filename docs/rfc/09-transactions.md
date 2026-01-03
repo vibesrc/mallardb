@@ -31,46 +31,46 @@ For write role connections, explicit transactions work as follows:
 
 ```sql
 BEGIN;                    -- Start transaction
-INSERT INTO t VALUES (1); -- Queued to writer
-UPDATE t SET x = 2;       -- Queued to writer
-COMMIT;                   -- Queued to writer, commits
+INSERT INTO t VALUES (1); -- Execute on connection
+UPDATE t SET x = 2;       -- Execute on connection
+COMMIT;                   -- Commit transaction
 ```
 
 **Behavior:**
 - `BEGIN` marks the connection as "in transaction"
-- Subsequent statements from this connection are grouped
-- All statements execute serially through the writer queue
+- Subsequent statements from this connection are part of the transaction
+- DuckDB manages write serialization via MVCC and optimistic concurrency
 - `COMMIT` or `ROLLBACK` ends the transaction block
 
-**Important constraint:** Because all writes serialize through a single writer, long-running transactions from one connection block writes from other connections. Applications SHOULD keep transactions short.
+### 9.4.2 Transaction Isolation
 
-### 9.4.2 Transaction Pinning
+Each client's DuckDB connection maintains its own transaction state:
+- Transactions are isolated per-connection
+- DuckDB's MVCC handles concurrent write transactions
+- Read transactions see consistent snapshots
 
-Once a write connection begins an explicit transaction:
-1. All queries from that connection go to the writer (already true for write role)
-2. The writer maintains transaction state for that connection
-3. No other connection's transaction can interleave
-
-### Figure 9-1: Write Transaction Serialization
+### Figure 9-1: Concurrent Transactions
 
 ```mermaid
 sequenceDiagram
     participant C1 as Client 1
     participant C2 as Client 2
-    participant W as Writer
+    participant D as DuckDB
 
-    C1->>W: BEGIN
-    W-->>C1: OK (in transaction)
-    C1->>W: INSERT INTO t VALUES (1)
-    W-->>C1: INSERT 0 1
-    C2->>W: INSERT INTO t VALUES (2)
-    Note over W: Queued behind C1's transaction
-    C1->>W: COMMIT
-    W-->>C1: COMMIT
-    W-->>C2: INSERT 0 1
+    C1->>D: BEGIN
+    D-->>C1: OK (in transaction)
+    C1->>D: INSERT INTO t VALUES (1)
+    D-->>C1: INSERT 0 1
+    C2->>D: INSERT INTO t VALUES (2)
+    D-->>C2: INSERT 0 1
+    Note over D: DuckDB MVCC handles<br/>concurrent writes
+    C1->>D: COMMIT
+    D-->>C1: COMMIT
+    C2->>D: COMMIT
+    D-->>C2: COMMIT
 ```
 
-*Figure 9-1 shows how a second client's write waits for the first client's transaction to complete.*
+*Figure 9-1 shows how concurrent transactions are handled by DuckDB's MVCC.*
 
 ### 9.4.3 Read Role Transactions
 
@@ -206,15 +206,9 @@ If the connection was idle:
 
 ## 9.11 Lock Wait Timeout
 
-Because writes serialize through a single writer, there are no traditional lock waits. However, the writer queue itself acts as a serialization point.
+DuckDB manages write locks internally using optimistic concurrency control. If a write conflict occurs, DuckDB will retry or fail the transaction.
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `mallardb_LOCK_TIMEOUT_MS` | 30000 | Maximum time waiting in writer queue |
-
-When timeout expires:
-- SQLSTATE `55P03` (lock_not_available)
-- Message: "canceling statement due to lock timeout"
+Lock timeout configuration is handled at the DuckDB level and is not exposed via mallardb configuration.
 
 ## 9.12 Two-Phase Commit
 

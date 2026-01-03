@@ -6,9 +6,10 @@ This specification defines the architecture, protocol implementation, catalog em
 
 ## Status of This Document
 
-**Status:** Draft  
-**Version:** 0.1.0-draft  
-**Obsoletes:** None  
+**Status:** Draft
+**Version:** 0.1.0-draft
+**Last Updated:** 2026-01-03
+**Obsoletes:** None
 **Updates:** None
 
 This document specifies the mallardb database server for implementers and integrators. Distribution of this document is unlimited.
@@ -19,6 +20,7 @@ mallardb follows these core principles:
 
 1. **PostgreSQL on the outside**: Any PostgreSQL client SHOULD connect without modification
 2. **DuckDB on the inside**: Full access to DuckDB features, extensions, and performance
-3. **Role-based routing**: Connection role determines read/write access and connection pooling strategy
-4. **Minimal overhead**: The protocol layer adds negligible latency to DuckDB query execution
-5. **Operational simplicity**: Docker-native with PostgreSQL-compatible environment variables
+3. **Role-based access**: Connection role determines read/write access
+4. **Minimal interception**: Leverage DuckDB's native pg_catalog; only intercept what's necessary
+5. **Per-client connections**: Each client maintains a persistent DuckDB connection
+6. **Operational simplicity**: Docker-native with PostgreSQL-compatible environment variables
