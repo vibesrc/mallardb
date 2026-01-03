@@ -48,6 +48,11 @@ chrono = "0.4"
 # Hex encoding
 hex = "0.4"
 
+# TLS support
+rustls = "0.23"
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
+
 # SQL parsing for robust query rewriting
 sqlparser = { version = "0.60", features = ["visitor"] }
 

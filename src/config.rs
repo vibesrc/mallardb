@@ -34,6 +34,10 @@ pub struct Config {
     // Logging
     pub log_level: String,
     pub log_queries: bool,
+
+    // TLS (optional - enabled when both cert and key are provided)
+    pub tls_cert_path: Option<PathBuf>,
+    pub tls_key_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -97,6 +101,9 @@ impl Config {
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
 
+        let tls_cert_path = std::env::var("MALLARDB_TLS_CERT").ok().map(PathBuf::from);
+        let tls_key_path = std::env::var("MALLARDB_TLS_KEY").ok().map(PathBuf::from);
+
         Ok(Config {
             postgres_user,
             postgres_password,
@@ -114,6 +121,8 @@ impl Config {
             pg_version,
             log_level,
             log_queries,
+            tls_cert_path,
+            tls_key_path,
         })
     }
 
@@ -130,6 +139,11 @@ impl Config {
     /// Check if readonly role is configured
     pub fn has_readonly_role(&self) -> bool {
         self.postgres_readonly_user.is_some() && self.postgres_readonly_password.is_some()
+    }
+
+    /// Check if TLS is enabled (both cert and key paths are provided)
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_cert_path.is_some() && self.tls_key_path.is_some()
     }
 
     /// Apply CLI overrides to the configuration

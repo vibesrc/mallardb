@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use clap::Parser;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -91,6 +92,65 @@ async fn run_scripts(backend: &Backend, dir: &Path, description: &str) {
     }
 }
 
+/// Load TLS certificates and create a TlsAcceptor
+fn load_tls_config(config: &Config) -> Option<TlsAcceptor> {
+    let cert_path = config.tls_cert_path.as_ref()?;
+    let key_path = config.tls_key_path.as_ref()?;
+
+    // Load certificate chain
+    let cert_file = match std::fs::File::open(cert_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open TLS certificate file {:?}: {}", cert_path, e);
+            return None;
+        }
+    };
+    let mut cert_reader = std::io::BufReader::new(cert_file);
+    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if certs.is_empty() {
+        error!("No valid certificates found in {:?}", cert_path);
+        return None;
+    }
+
+    // Load private key
+    let key_file = match std::fs::File::open(key_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open TLS key file {:?}: {}", key_path, e);
+            return None;
+        }
+    };
+    let mut key_reader = std::io::BufReader::new(key_file);
+    let key = match rustls_pemfile::private_key(&mut key_reader) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            error!("No private key found in {:?}", key_path);
+            return None;
+        }
+        Err(e) => {
+            error!("Failed to read private key from {:?}: {}", key_path, e);
+            return None;
+        }
+    };
+
+    // Build rustls ServerConfig
+    let server_config = match rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+    {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to build TLS config: {}", e);
+            return None;
+        }
+    };
+
+    Some(TlsAcceptor::from(Arc::new(server_config)))
+}
+
 #[tokio::main]
 async fn main() {
     // Load environment variables from .env if present
@@ -140,6 +200,23 @@ async fn main() {
             "disabled"
         }
     );
+
+    // Load TLS configuration if enabled
+    let tls_acceptor = if config.tls_enabled() {
+        match load_tls_config(&config) {
+            Some(acceptor) => {
+                info!("TLS enabled");
+                Some(acceptor)
+            }
+            None => {
+                error!("TLS configuration failed, exiting");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        info!("TLS disabled (set MALLARDB_TLS_CERT and MALLARDB_TLS_KEY to enable)");
+        None
+    };
 
     // Check if this is first start (database doesn't exist)
     let is_first_start = !config.db_path().exists();
@@ -220,8 +297,9 @@ async fn main() {
                         match factory.create_connection_handler() {
                             Ok(connection_handler) => {
                                 let connection_handler = Arc::new(connection_handler);
+                                let tls = tls_acceptor.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = process_socket(socket, None, connection_handler).await {
+                                    if let Err(e) = process_socket(socket, tls, connection_handler).await {
                                         error!("Connection error from {}: {:?}", addr, e);
                                     }
                                     info!("Connection closed from {}", addr);

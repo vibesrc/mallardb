@@ -148,6 +148,8 @@ mod tests {
             pg_version: "15.0".to_string(),
             log_level: "info".to_string(),
             log_queries: false,
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 
@@ -284,6 +286,8 @@ mod tests {
             pg_version: "15.0".to_string(),
             log_level: "info".to_string(),
             log_queries: false,
+            tls_cert_path: None,
+            tls_key_path: None,
         });
         let auth = MallardbAuthSource::new(config);
 
