@@ -347,36 +347,15 @@ fn rewrite_schema_comparison(col_expr: &mut Expr, val_expr: &mut Expr) {
     }
 }
 
-/// Rewrite catalog comparisons: database name -> 'data'
-fn rewrite_catalog_comparison(col_expr: &mut Expr, val_expr: &mut Expr, database: &str) {
-    // Check if column is a catalog-related column
-    let is_catalog_col = match col_expr {
-        Expr::Identifier(ident) => {
-            let name = ident.value.to_lowercase();
-            matches!(name.as_str(), "table_catalog" | "catalog_name")
-        }
-        Expr::CompoundIdentifier(idents) => {
-            if let Some(last) = idents.last() {
-                let name = last.value.to_lowercase();
-                matches!(name.as_str(), "table_catalog" | "catalog_name")
-            } else {
-                false
-            }
-        }
-        _ => false,
-    };
-
-    if is_catalog_col {
-        // Replace database name with 'data'
-        if let Expr::Value(ValueWithSpan {
-            value: Value::SingleQuotedString(s),
-            ..
-        }) = val_expr
-            && s == database
-        {
-            *s = "data".to_string();
-        }
-    }
+/// Catalog comparison rewriting (currently a no-op)
+///
+/// DuckDB catalog name comes from the database filename (e.g. mallard.db -> 'mallard').
+/// If POSTGRES_DB matches the filename stem, no rewriting is needed.
+/// For now we assume they match and preserve the catalog name as-is.
+fn rewrite_catalog_comparison(_col_expr: &mut Expr, _val_expr: &mut Expr, _database: &str) {
+    // No-op: catalog names are preserved as-is
+    // In the future, if POSTGRES_DB differs from the DuckDB catalog name,
+    // we could rewrite here: catalog_name = '{postgres_db}' -> catalog_name = '{duckdb_catalog}'
 }
 
 /// String-based SQL rewriting as fallback for unparseable SQL
@@ -386,7 +365,7 @@ fn rewrite_catalog_comparison(col_expr: &mut Expr, val_expr: &mut Expr, database
 ///
 /// NOTE: If this function is being called frequently, consider fixing the parser or
 /// handling those SQL patterns in the AST-based rewriter.
-fn rewrite_sql_string(sql: &str, database: &str) -> String {
+fn rewrite_sql_string(sql: &str, _database: &str) -> String {
     let mut result = sql.to_string();
 
     // Replace 'public' schema references with 'main'
@@ -406,29 +385,10 @@ fn rewrite_sql_string(sql: &str, database: &str) -> String {
         result = case_insensitive_replace(&result, from, to);
     }
 
-    // Replace database/catalog name references with 'data'
-    let catalog_replacements = [
-        (
-            format!("table_catalog = '{}'", database),
-            "table_catalog = 'data'".to_string(),
-        ),
-        (
-            format!("table_catalog='{}'", database),
-            "table_catalog='data'".to_string(),
-        ),
-        (
-            format!("catalog_name = '{}'", database),
-            "catalog_name = 'data'".to_string(),
-        ),
-        (
-            format!("catalog_name='{}'", database),
-            "catalog_name='data'".to_string(),
-        ),
-    ];
-
-    for (from, to) in catalog_replacements {
-        result = case_insensitive_replace(&result, &from, &to);
-    }
+    // Catalog name comes from DuckDB filename (e.g. mallard.db -> catalog 'mallard')
+    // If POSTGRES_DB matches the filename, no rewriting needed.
+    // If they differ, client queries with POSTGRES_DB name need rewriting to actual catalog.
+    // For now, we assume they match (default: mallard.db + POSTGRES_DB=mallard)
 
     // Remove ::regclass casts
     while let Some(pos) = result.find("::regclass") {
@@ -534,10 +494,11 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_catalog_name() {
+    fn test_rewrite_catalog_name_preserved() {
+        // Catalog name should be preserved (no longer rewritten to hardcoded 'data')
         let sql = "SELECT * FROM t WHERE table_catalog = 'mydb'";
         let result = rewrite_sql(sql, "mydb");
-        assert!(result.contains("'data'"));
+        assert!(result.contains("'mydb'"));
     }
 
     #[test]

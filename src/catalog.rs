@@ -432,10 +432,11 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_sql_catalog_replacement() {
+    fn test_rewrite_sql_catalog_preserved() {
+        // Catalog name should be preserved (matches DuckDB catalog from filename)
         let sql = "SELECT * FROM t WHERE table_catalog = 'mydb'";
         let result = rewrite_sql(sql, "mydb");
-        assert!(result.contains("table_catalog = 'data'"));
+        assert!(result.contains("mydb"));
     }
 
     #[test]
