@@ -14,7 +14,9 @@ RUN chmod +x /usr/local/bin/mallardb
 
 # Default database path (follows PostgreSQL PGDATA convention)
 ENV MALLARDB_DATABASE=/var/lib/mallardb/data/mallard.db
-VOLUME /var/lib/mallardb/data
+# Store DuckDB extensions alongside data for persistence
+ENV MALLARDB_EXTENSION_DIRECTORY=/var/lib/mallardb/extensions
+VOLUME /var/lib/mallardb
 
 # Init script directories
 VOLUME /docker-entrypoint-initdb.d

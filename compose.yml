@@ -5,7 +5,7 @@ services:
     ports:
       - 5432:5432
     volumes:
-      - mallardb_data:/var/lib/mallardb/data
+      - mallardb_data:/var/lib/mallardb
       # Optional: mount init scripts
       # - ./initdb.d:/docker-entrypoint-initdb.d:ro
       # - ./startdb.d:/docker-entrypoint-startdb.d:ro

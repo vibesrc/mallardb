@@ -20,6 +20,7 @@ pub struct Config {
 
     // Data storage
     pub database: PathBuf,
+    pub extension_directory: PathBuf,
 
     // Performance
     pub max_readers: usize,
@@ -67,6 +68,10 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data/mallard.db"));
 
+        let extension_directory = std::env::var("MALLARDB_EXTENSION_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./extensions"));
+
         let max_readers = std::env::var("MALLARDB_MAX_READERS")
             .unwrap_or_else(|_| "64".to_string())
             .parse()
@@ -101,6 +106,7 @@ impl Config {
             host,
             port,
             database,
+            extension_directory,
             max_readers,
             writer_queue_size,
             batch_size,

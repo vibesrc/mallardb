@@ -292,7 +292,11 @@ fn get_value_as_string(row: &duckdb::Row, idx: usize) -> Option<String> {
                     .map(|arr| arr.value(k).to_string())
             })
         }
-        _ => Some("".to_string()),
+        ValueRef::List(list_type, row_idx) => Some(format_list(list_type, row_idx)),
+        ValueRef::Map(map_array, row_idx) => Some(format_map(map_array, row_idx)),
+        ValueRef::Struct(struct_array, row_idx) => Some(format_struct(struct_array, row_idx)),
+        ValueRef::Array(array, row_idx) => Some(format_fixed_list(array, row_idx)),
+        ValueRef::Union(union_array, row_idx) => Some(format_union(union_array, row_idx)),
     }
 }
 
@@ -372,6 +376,105 @@ fn format_interval(months: i32, days: i32, nanos: i64) -> String {
         "00:00:00".to_string()
     } else {
         parts.join(" ")
+    }
+}
+
+/// Format a List/Array value from Arrow
+fn format_list(list_type: duckdb::types::ListType, row_idx: usize) -> String {
+    use duckdb::arrow::array::Array;
+    match list_type {
+        duckdb::types::ListType::Regular(list_array) => {
+            let value = list_array.value(row_idx);
+            format_arrow_array(&value)
+        }
+        duckdb::types::ListType::Large(list_array) => {
+            let value = list_array.value(row_idx);
+            format_arrow_array(&value)
+        }
+    }
+}
+
+/// Format a fixed-size array value
+fn format_fixed_list(array: &duckdb::arrow::array::FixedSizeListArray, row_idx: usize) -> String {
+    use duckdb::arrow::array::Array;
+    let value = array.value(row_idx);
+    format_arrow_array(&value)
+}
+
+/// Format a Map value from Arrow
+fn format_map(map_array: &duckdb::arrow::array::MapArray, row_idx: usize) -> String {
+    use duckdb::arrow::array::Array;
+    let entries = map_array.value(row_idx);
+    // Map entries are stored as a struct array with "key" and "value" fields
+    format!("{{{}}}", format_arrow_array(&entries))
+}
+
+/// Format a Struct value from Arrow
+fn format_struct(struct_array: &duckdb::arrow::array::StructArray, row_idx: usize) -> String {
+    let fields = struct_array.fields();
+    let mut parts = Vec::new();
+    for (i, field) in fields.iter().enumerate() {
+        let col = struct_array.column(i);
+        let value = format_arrow_value(col, row_idx);
+        parts.push(format!("'{}': {}", field.name(), value));
+    }
+    format!("{{{}}}", parts.join(", "))
+}
+
+/// Format a Union value from Arrow
+fn format_union(union_array: &duckdb::arrow::array::ArrayRef, row_idx: usize) -> String {
+    format_arrow_value(union_array, row_idx)
+}
+
+/// Format an Arrow array as a string (for list contents)
+fn format_arrow_array(array: &dyn duckdb::arrow::array::Array) -> String {
+    use duckdb::arrow::array::Array;
+    let mut values = Vec::new();
+    for i in 0..array.len() {
+        values.push(format_arrow_value_dyn(array, i));
+    }
+    format!("[{}]", values.join(", "))
+}
+
+/// Format a single Arrow value at an index
+fn format_arrow_value(array: &duckdb::arrow::array::ArrayRef, idx: usize) -> String {
+    format_arrow_value_dyn(array.as_ref(), idx)
+}
+
+/// Format a single Arrow value dynamically
+fn format_arrow_value_dyn(array: &dyn duckdb::arrow::array::Array, idx: usize) -> String {
+    use duckdb::arrow::array::*;
+
+    if array.is_null(idx) {
+        return "NULL".to_string();
+    }
+
+    // Try common types
+    if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+        return format!("'{}'", arr.value(idx));
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
+        return format!("'{}'", arr.value(idx));
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+        return if arr.value(idx) { "true" } else { "false" }.to_string();
+    }
+
+    // Fallback: use Arrow's display formatting
+    use duckdb::arrow::util::display::ArrayFormatter;
+    let options = duckdb::arrow::util::display::FormatOptions::default();
+    match ArrayFormatter::try_new(array, &options) {
+        Ok(formatter) => formatter.value(idx).to_string(),
+        Err(_) => "<complex>".to_string(),
     }
 }
 
@@ -470,6 +573,18 @@ impl Backend {
 
         // Open the database once - all connections will be cloned from this
         let base_conn = Connection::open(&db_path).expect("Failed to open database");
+
+        // Set extension directory
+        let ext_dir = &config.extension_directory;
+        if let Err(e) = std::fs::create_dir_all(ext_dir) {
+            tracing::error!("Failed to create extension directory: {}", e);
+        }
+        let set_sql = format!("SET extension_directory = '{}'", ext_dir.display());
+        if let Err(e) = base_conn.execute(&set_sql, []) {
+            tracing::error!("Failed to set extension_directory: {}", e);
+        } else {
+            info!("Extension directory set to {:?}", ext_dir);
+        }
 
         // Create PostgreSQL compatibility macros
         Self::init_pg_compat_macros(&base_conn);
@@ -809,6 +924,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 5432,
             database: db_path.clone(),
+            extension_directory: std::path::PathBuf::from("./extensions"),
             max_readers: 64,
             writer_queue_size: 1000,
             batch_size: 1000,
@@ -834,6 +950,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 5432,
             database: dir.path().join("test.db"),
+            extension_directory: std::path::PathBuf::from("./extensions"),
             max_readers: 64,
             writer_queue_size: 1000,
             batch_size: 1000,
@@ -863,6 +980,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 5432,
             database: dir.path().join("test.db"),
+            extension_directory: std::path::PathBuf::from("./extensions"),
             max_readers: 64,
             writer_queue_size: 1000,
             batch_size: 1000,
