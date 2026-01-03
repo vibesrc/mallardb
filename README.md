@@ -1,6 +1,82 @@
 # mallardb
 
-A PostgreSQL-compatible interface over DuckDB. Looks like Postgres, acts like DuckDB.
+Looks like an elephant. Quacks like a duck.
+
+mallardb is a PostgreSQL-compatible gateway to DuckDB's federated query engine. It lets any PostgreSQL client (psql, DBeaver, Tableau, Grafana, Metabase, your favorite ORM) query files, object storage, and external databases through DuckDB, without custom drivers or plugins.
+
+**DuckDB can already query almost anything. mallardb lets almost anything query DuckDB.**
+
+## Why This Exists
+
+DuckDB is a universal analytical query engine. It can query and join, in a single SQL statement:
+
+- **Files**: Parquet, CSV, JSON, Excel
+- **Object storage**: S3, GCS, Azure Blob (any S3-compatible endpoint)
+- **Databases via native connectors**: PostgreSQL, MySQL, SQLite
+- **Databases via ODBC**: SQL Server, Oracle, Access, and anything else with an ODBC driver
+- **Additional sources via plugins**: the DuckDB extension ecosystem continues to grow
+
+The problem: most BI tools, dashboards, and applications speak PostgreSQL. They don't speak DuckDB.
+
+mallardb bridges this gap. It presents a PostgreSQL wire protocol interface, translates queries, and executes them against DuckDB. Your existing tools get access to DuckDB's federated query capabilities without modification.
+
+## What This Enables
+
+**Federated analytics**: Join a Parquet file in S3 with a table in your production PostgreSQL database, from Tableau, Grafana, or any BI tool:
+
+```sql
+-- This query executes inside DuckDB.
+-- mallardb only provides the PostgreSQL-compatible endpoint.
+
+-- Attach your production PostgreSQL database
+ATTACH 'postgres://readonly:pass@prod.db/app' AS prod (TYPE POSTGRES);
+
+-- Join S3 parquet files with live PostgreSQL data
+SELECT
+    o.order_id,
+    o.total,
+    c.name,
+    c.segment
+FROM read_parquet('s3://analytics/orders/*.parquet') o
+JOIN prod.public.customers c ON o.customer_id = c.id
+WHERE o.order_date > '2024-01-01';
+```
+
+**Zero-ETL exploration**: Query data where it lives. No pipelines, no copies, no waiting.
+
+**BI tools on data lakes**: Point Tableau or Metabase at mallardb, query Parquet files as if they were tables.
+
+**Existing DuckDB databases**: Point mallardb at any `.db` file and immediately expose it via PostgreSQL protocol.
+
+## What This Is NOT
+
+mallardb is intentionally limited. It is:
+
+- **Not a PostgreSQL replacement**: It doesn't implement PostgreSQL semantics, just the wire protocol
+- **Not an OLTP database**: DuckDB is analytical; use it for reads and batch operations
+- **Not a scheduler or orchestrator**: It runs queries, it doesn't manage workflows
+- **Not transactional**: No multi-statement ACID transactions across sources
+
+If you need PostgreSQL, use PostgreSQL. mallardb is for when you need DuckDB's query capabilities but your tools only speak PostgreSQL.
+
+## Safety Model
+
+mallardb supports two roles:
+
+| Role | Capabilities |
+|------|--------------|
+| **Admin** (read-write) | Full DuckDB access: create tables, write files, attach databases, install extensions |
+| **Reader** (read-only) | Query only: SELECT statements, no modifications |
+
+By default, connect your BI tools with the read-only role. Writes and administrative operations require the admin role. This is intentional.
+
+```bash
+# Admin role (full access)
+PGPASSWORD=secret psql -U mallard -d mallard
+
+# Read-only role (safe for dashboards)
+PGPASSWORD=readerpass psql -U reader -d mallard
+```
 
 ## Quick Start
 
@@ -12,176 +88,136 @@ cargo build --release
 
 ### 2. Configure
 
-Create a `.env` file or set environment variables:
-
 ```bash
 # Required
-POSTGRES_PASSWORD=secret
+export POSTGRES_PASSWORD=secret
 
-# Optional (defaults shown)
-POSTGRES_USER=mallard
-POSTGRES_DB=mallard
-MALLARDB_PORT=5432
-MALLARDB_DATA_DIR=./data
+# Optional
+export POSTGRES_USER=mallard              # default: mallard
+export MALLARDB_DATABASE=./data/mallard.db  # default: ./data/mallard.db
+export MALLARDB_PORT=5432                 # default: 5432
 
-# Optional: Read-only user
-POSTGRES_READONLY_USER=reader
-POSTGRES_READONLY_PASSWORD=readerpass
+# Read-only user (recommended for BI tools)
+export POSTGRES_READONLY_USER=reader
+export POSTGRES_READONLY_PASSWORD=readerpass
 ```
 
 ### 3. Run
 
 ```bash
-# With .env file in current directory
 ./target/release/mallardb
 
-# Or with environment variables (only password is required)
-POSTGRES_PASSWORD=secret ./target/release/mallardb
-
-# With CLI options (override env vars)
-./target/release/mallardb --data-dir /var/lib/mallardb --port 5433 --host 127.0.0.1
+# Or point at an existing DuckDB database
+./target/release/mallardb --database /path/to/existing.db
 ```
-
-#### CLI Options
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--data-dir` | `-d` | Data directory path (overrides MALLARDB_DATA_DIR) |
-| `--port` | `-p` | Listen port (overrides MALLARDB_PORT) |
-| `--host` | `-H` | Listen host/address (overrides MALLARDB_HOST) |
-| `--help` | `-h` | Print help |
-| `--version` | `-V` | Print version |
 
 ### 4. Connect
 
 ```bash
-# Using psql (default user/db is 'mallard')
-psql -h 127.0.0.1 -p 5432 -U mallard -d mallard
-
-# With password in env
-PGPASSWORD=secret psql -h 127.0.0.1 -p 5432 -U mallard -d mallard
-
-# Read-only user (if configured)
-PGPASSWORD=readerpass psql -h 127.0.0.1 -p 5432 -U reader -d mallard
+PGPASSWORD=secret psql -h 127.0.0.1 -U mallard -d mallard
 ```
 
-## Features
+## Advanced Capabilities
 
-- **PostgreSQL Wire Protocol** - Connect with any PostgreSQL client (psql, DBeaver, Grafana, ORMs, etc.)
-- **MD5 Password Authentication** - Standard PostgreSQL authentication
-- **Role-Based Access Control** - Write users can modify data, read-only users can only query
-- **DuckDB Backend** - Fast analytical queries with columnar storage
-- **pg_catalog Emulation** - Compatible with ORMs and tools that query system catalogs
-- **SQL Rewriting** - Automatic translation of PostgreSQL-specific syntax to DuckDB
+These features are powerful but require understanding DuckDB. They're opt-in and user-owned.
+
+### DuckDB Extensions
+
+Install and use any DuckDB extension:
+
+```sql
+INSTALL httpfs;
+LOAD httpfs;
+
+-- Now query S3 directly
+SELECT * FROM read_parquet('s3://bucket/data/*.parquet');
+```
+
+### Native Database Connectors
+
+Query PostgreSQL and MySQL directly:
+
+```sql
+ATTACH 'postgres://user:pass@host/db' AS prod (TYPE POSTGRES);
+SELECT * FROM prod.users WHERE created_at > '2024-01-01';
+```
+
+### ODBC Sources
+
+Connect to anything with an ODBC driver:
+
+```sql
+ATTACH 'DSN=sqlserver_prod' AS erp (TYPE ODBC);
+SELECT * FROM erp.dbo.inventory;
+```
+
+### Scheduled Operations
+
+DuckDB doesn't have a scheduler, but mallardb supports init scripts that run on startup. Combined with container orchestration or cron, you can build lightweight refresh workflows:
+
+```
+/docker-entrypoint-startdb.d/
+└── 01-refresh-views.sql    # Runs on every startup
+```
+
+This is not a replacement for proper orchestration tools. Use it for simple cases.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    PostgreSQL Clients                    │
-│          (psql, DBeaver, Grafana, ORMs, etc.)           │
-└─────────────────────┬───────────────────────────────────┘
-                      │ PostgreSQL Wire Protocol (port 5432)
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│                      mallardb                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │    Auth     │  │   Catalog   │  │  Query Router   │  │
-│  │  (MD5 pass) │  │  Emulation  │  │  (role-based)   │  │
-│  └─────────────┘  └─────────────┘  └────────┬────────┘  │
-│                                              │           │
-│                    ┌─────────────────────────┼───────┐   │
-│                    │                         │       │   │
-│                    ▼                         ▼       │   │
-│             ┌────────────┐           ┌────────────┐  │   │
-│             │   Writer   │           │  Readers   │  │   │
-│             │   Queue    │           │   Pool     │  │   │
-│             └─────┬──────┘           └─────┬──────┘  │   │
-│                   │                        │         │   │
-└───────────────────┼────────────────────────┼─────────┘   │
-                    │                        │             │
-                    ▼                        ▼             │
-              ┌──────────────────────────────────┐         │
-              │            DuckDB                │         │
-              │     (data.db in PGDATA)          │         │
-              └──────────────────────────────────┘         │
+┌─────────────────────────────────────────────────────────────┐
+│                    PostgreSQL Clients                        │
+│        (psql, DBeaver, Tableau, Grafana, Metabase, ORMs)     │
+└────────────────────────────┬────────────────────────────────┘
+                             │ PostgreSQL Wire Protocol
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                         mallardb                             │
+│   ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│   │     Auth     │  │   Catalog    │  │   SQL Rewriter   │  │
+│   │  (MD5 auth)  │  │  Emulation   │  │  (PG → DuckDB)   │  │
+│   └──────────────┘  └──────────────┘  └──────────────────┘  │
+│                              │                               │
+│              ┌───────────────┴───────────────┐              │
+│              ▼                               ▼              │
+│        ┌──────────┐                   ┌──────────┐          │
+│        │  Writer  │                   │  Reader  │          │
+│        │  (admin) │                   │ (r/o)    │          │
+│        └────┬─────┘                   └────┬─────┘          │
+└─────────────┼──────────────────────────────┼────────────────┘
+              │                              │
+              ▼                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                          DuckDB                              │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌───────┐  │
+│  │ Parquet │ │   S3    │ │Postgres │ │  ODBC   │ │ .csv  │  │
+│  │  files  │ │ buckets │ │  scan   │ │ sources │ │ .json │  │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └───────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-## Example Usage
-
-```sql
--- Create a table
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
-    name TEXT,
-    email TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Insert data
-INSERT INTO users (id, name, email) VALUES
-    (1, 'Alice', 'alice@example.com'),
-    (2, 'Bob', 'bob@example.com');
-
--- Query data
-SELECT * FROM users WHERE id = 1;
-
--- DuckDB-specific features work too
-SELECT * FROM read_csv_auto('data.csv');
-COPY users TO 'users.parquet' (FORMAT PARQUET);
-```
-
-## Init Scripts
-
-mallardb supports automatic SQL script execution (following PostgreSQL Docker conventions):
-
-```
-/docker-entrypoint-initdb.d/   # Runs once on first database creation
-├── 01-schema.sql
-└── 02-seed.sql
-
-/docker-entrypoint-startdb.d/  # Runs on every startup (idempotent)
-└── 01-ensure-tables.sql
-```
-
-- `/docker-entrypoint-initdb.d/` - Scripts run once when the database is first created
-- `/docker-entrypoint-startdb.d/` - Scripts run on every startup (use `CREATE TABLE IF NOT EXISTS`, etc.)
-
-Scripts execute in alphabetical order. Only `.sql` files are processed.
-
-Override paths with `MALLARDB_INITDB_DIR` and `MALLARDB_STARTDB_DIR` environment variables.
 
 ## Configuration Reference
-
-All `MALLARDB_*` variables also accept `POSTGRES_*` prefix for compatibility.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MALLARDB_PASSWORD` | Admin password (required) | - |
 | `MALLARDB_USER` | Admin username | mallard |
 | `MALLARDB_DB` | Database name | $MALLARDB_USER |
-| `MALLARDB_READONLY_USER` | Read-only username | (disabled) |
-| `MALLARDB_READONLY_PASSWORD` | Read-only password | (disabled) |
+| `MALLARDB_DATABASE` | Database file path | ./data/mallard.db |
 | `MALLARDB_PORT` | Listen port | 5432 |
 | `MALLARDB_HOST` | Listen address | 0.0.0.0 |
-| `MALLARDB_DATA_DIR` | Data directory | ./data |
+| `MALLARDB_READONLY_USER` | Read-only username | (disabled) |
+| `MALLARDB_READONLY_PASSWORD` | Read-only password | (disabled) |
 
-## Supported Types
+All variables accept `POSTGRES_*` prefix for Docker compatibility.
 
-| DuckDB Type | PostgreSQL OID |
-|-------------|----------------|
-| BOOLEAN | bool (16) |
-| TINYINT, SMALLINT | int2 (21) |
-| INTEGER | int4 (23) |
-| BIGINT | int8 (20) |
-| FLOAT | float4 (700) |
-| DOUBLE | float8 (701) |
-| VARCHAR, TEXT | text (25) |
-| DATE | date (1082) |
-| TIMESTAMP | timestamp (1114) |
-| INTERVAL | interval (1186) |
-| BLOB | bytea (17) |
-| DECIMAL | numeric (1700) |
+## CLI Options
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--database` | `-d` | Database file path |
+| `--port` | `-p` | Listen port |
+| `--host` | `-H` | Listen address |
 
 ## License
 

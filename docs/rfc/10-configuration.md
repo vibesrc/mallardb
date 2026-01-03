@@ -36,8 +36,7 @@ mallardb is configured primarily through environment variables, following Postgr
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `MALLARDB_DATA_DIR` | No | `./data` | Data directory path |
-| `MALLARDB_DB_FILE` | No | `data.db` | Database filename |
+| `MALLARDB_DATABASE` | No | `./data/mallard.db` | Database file path |
 
 ### 10.2.5 Performance
 
@@ -66,7 +65,7 @@ FROM debian:bookworm-slim
 COPY --from=builder /app/mallardb /usr/local/bin/
 COPY docker-entrypoint.sh /usr/local/bin/
 
-ENV MALLARDB_DATA_DIR=/var/lib/mallardb/data
+ENV MALLARDB_DATABASE=/var/lib/mallardb/data/mallard.db
 VOLUME /var/lib/mallardb/data
 
 EXPOSE 5432
