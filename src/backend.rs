@@ -4,9 +4,12 @@
 //! serialization internally via its WAL and locking mechanisms.
 
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use chrono::{NaiveDate, NaiveTime};
 use duckdb::Connection;
+use rust_decimal::Decimal;
 use tracing::{debug, info};
 
 use crate::config::Config;
@@ -15,13 +18,42 @@ use crate::error::MallardbError;
 /// Result type for query execution
 pub type QueryResult = Result<QueryOutput, MallardbError>;
 
+/// A typed value from DuckDB - preserves native types for efficient encoding
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Null,
+    Boolean(bool),
+    Int16(i16),
+    Int32(i32),
+    Int64(i64),
+    Float32(f32),
+    Float64(f64),
+    Decimal(rust_decimal::Decimal),
+    Text(String),
+    Bytes(Vec<u8>),
+    Date(chrono::NaiveDate),
+    Time(chrono::NaiveTime),
+    Timestamp(chrono::NaiveDateTime),
+    TimestampTz(chrono::DateTime<chrono::Utc>),
+}
+
+impl Value {
+    /// Get the text value if this is a Text variant
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Value::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
 /// Output from a query execution
 #[derive(Debug)]
 pub enum QueryOutput {
     /// Rows returned from a SELECT query
     Rows {
         columns: Vec<ColumnInfo>,
-        rows: Vec<Vec<Option<String>>>,
+        rows: Vec<Vec<Value>>,
     },
     /// Affected rows from INSERT/UPDATE/DELETE
     Execute {
@@ -221,7 +253,7 @@ fn execute_select(conn: &Connection, sql: &str) -> QueryResult {
     while let Some(row) = rows_result.next().map_err(MallardbError::from_duckdb)? {
         let mut row_data = Vec::with_capacity(col_count);
         for i in 0..col_count {
-            let value = get_value_as_string(row, i);
+            let value = get_typed_value(row, i);
             row_data.push(value);
         }
         rows.push(row_data);
@@ -230,40 +262,83 @@ fn execute_select(conn: &Connection, sql: &str) -> QueryResult {
     Ok(QueryOutput::Rows { columns, rows })
 }
 
-/// Helper to get any DuckDB value as a string
-fn get_value_as_string(row: &duckdb::Row, idx: usize) -> Option<String> {
+/// Helper to get a typed Value from DuckDB - preserves native types
+fn get_typed_value(row: &duckdb::Row, idx: usize) -> Value {
     use duckdb::types::ValueRef;
 
     let value_ref = match row.get_ref(idx) {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(_) => return Value::Null,
     };
 
     match value_ref {
-        ValueRef::Null => None,
-        ValueRef::Boolean(b) => Some(if b { "t".to_string() } else { "f".to_string() }),
-        ValueRef::TinyInt(i) => Some(i.to_string()),
-        ValueRef::SmallInt(i) => Some(i.to_string()),
-        ValueRef::Int(i) => Some(i.to_string()),
-        ValueRef::BigInt(i) => Some(i.to_string()),
-        ValueRef::HugeInt(i) => Some(i.to_string()),
-        ValueRef::UTinyInt(i) => Some(i.to_string()),
-        ValueRef::USmallInt(i) => Some(i.to_string()),
-        ValueRef::UInt(i) => Some(i.to_string()),
-        ValueRef::UBigInt(i) => Some(i.to_string()),
-        ValueRef::Float(f) => Some(f.to_string()),
-        ValueRef::Double(d) => Some(d.to_string()),
-        ValueRef::Decimal(d) => Some(d.to_string()),
-        ValueRef::Text(s) => String::from_utf8(s.to_vec()).ok(),
-        ValueRef::Blob(b) => Some(format!("\\x{}", hex::encode(b))),
-        ValueRef::Date32(d) => Some(format_date(d)),
-        ValueRef::Time64(unit, t) => Some(format_time(unit, t)),
-        ValueRef::Timestamp(unit, ts) => Some(format_timestamp(unit, ts)),
-        ValueRef::Interval {
-            months,
-            days,
-            nanos,
-        } => Some(format_interval(months, days, nanos)),
+        ValueRef::Null => Value::Null,
+        ValueRef::Boolean(b) => Value::Boolean(b),
+        ValueRef::TinyInt(i) => Value::Int16(i as i16),
+        ValueRef::SmallInt(i) => Value::Int16(i),
+        ValueRef::Int(i) => Value::Int32(i),
+        ValueRef::BigInt(i) => Value::Int64(i),
+        ValueRef::HugeInt(i) => {
+            // Try to fit in Decimal, fallback to text
+            Decimal::from_str(&i.to_string())
+                .map(Value::Decimal)
+                .unwrap_or_else(|_| Value::Text(i.to_string()))
+        }
+        ValueRef::UTinyInt(i) => Value::Int16(i as i16),
+        ValueRef::USmallInt(i) => Value::Int32(i as i32),
+        ValueRef::UInt(i) => Value::Int64(i as i64),
+        ValueRef::UBigInt(i) => {
+            // u64 might not fit in i64, use Decimal
+            Decimal::from_str(&i.to_string())
+                .map(Value::Decimal)
+                .unwrap_or_else(|_| Value::Text(i.to_string()))
+        }
+        ValueRef::Float(f) => Value::Float32(f),
+        ValueRef::Double(d) => Value::Float64(d),
+        ValueRef::Decimal(d) => {
+            Decimal::from_str(&d.to_string())
+                .map(Value::Decimal)
+                .unwrap_or_else(|_| Value::Text(d.to_string()))
+        }
+        ValueRef::Text(s) => {
+            String::from_utf8(s.to_vec())
+                .map(Value::Text)
+                .unwrap_or_else(|_| Value::Bytes(s.to_vec()))
+        }
+        ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
+        ValueRef::Date32(days) => {
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            Value::Date(epoch + chrono::Duration::days(days as i64))
+        }
+        ValueRef::Time64(unit, t) => {
+            let micros = match unit {
+                duckdb::types::TimeUnit::Second => t * 1_000_000,
+                duckdb::types::TimeUnit::Millisecond => t * 1_000,
+                duckdb::types::TimeUnit::Microsecond => t,
+                duckdb::types::TimeUnit::Nanosecond => t / 1_000,
+            };
+            let secs = (micros / 1_000_000) as u32;
+            let micro_part = (micros % 1_000_000) as u32;
+            NaiveTime::from_num_seconds_from_midnight_opt(secs, micro_part * 1000)
+                .map(Value::Time)
+                .unwrap_or_else(|| Value::Text(format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)))
+        }
+        ValueRef::Timestamp(unit, ts) => {
+            let micros = match unit {
+                duckdb::types::TimeUnit::Second => ts * 1_000_000,
+                duckdb::types::TimeUnit::Millisecond => ts * 1_000,
+                duckdb::types::TimeUnit::Microsecond => ts,
+                duckdb::types::TimeUnit::Nanosecond => ts / 1_000,
+            };
+            let secs = micros / 1_000_000;
+            let nsecs = ((micros % 1_000_000) * 1000) as u32;
+            chrono::DateTime::from_timestamp(secs, nsecs)
+                .map(|dt| Value::Timestamp(dt.naive_utc()))
+                .unwrap_or_else(|| Value::Text("1970-01-01 00:00:00".to_string()))
+        }
+        ValueRef::Interval { months, days, nanos } => {
+            Value::Text(format_interval(months, days, nanos))
+        }
         ValueRef::Enum(enum_type, idx) => {
             use arrow::array::StringArray;
             let dict_values = match enum_type {
@@ -276,53 +351,21 @@ fn get_value_as_string(row: &duckdb::Row, idx: usize) -> Option<String> {
                 duckdb::types::EnumType::UInt16(res) => res.key(idx),
                 duckdb::types::EnumType::UInt32(res) => res.key(idx),
             };
-            dict_key.and_then(|k| {
-                dict_values
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .map(|arr| arr.value(k).to_string())
-            })
+            dict_key
+                .and_then(|k| {
+                    dict_values
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .map(|arr| Value::Text(arr.value(k).to_string()))
+                })
+                .unwrap_or(Value::Null)
         }
-        ValueRef::List(list_type, row_idx) => Some(format_list(list_type, row_idx)),
-        ValueRef::Map(map_array, row_idx) => Some(format_map(map_array, row_idx)),
-        ValueRef::Struct(struct_array, row_idx) => Some(format_struct(struct_array, row_idx)),
-        ValueRef::Array(array, row_idx) => Some(format_fixed_list(array, row_idx)),
-        ValueRef::Union(union_array, row_idx) => Some(format_union(union_array, row_idx)),
+        ValueRef::List(list_type, row_idx) => Value::Text(format_list(list_type, row_idx)),
+        ValueRef::Map(map_array, row_idx) => Value::Text(format_map(map_array, row_idx)),
+        ValueRef::Struct(struct_array, row_idx) => Value::Text(format_struct(struct_array, row_idx)),
+        ValueRef::Array(array, row_idx) => Value::Text(format_fixed_list(array, row_idx)),
+        ValueRef::Union(union_array, row_idx) => Value::Text(format_union(union_array, row_idx)),
     }
-}
-
-fn format_date(days: i32) -> String {
-    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    let date = epoch + chrono::Duration::days(days as i64);
-    date.format("%Y-%m-%d").to_string()
-}
-
-fn format_time(unit: duckdb::types::TimeUnit, value: i64) -> String {
-    let micros = match unit {
-        duckdb::types::TimeUnit::Second => value * 1_000_000,
-        duckdb::types::TimeUnit::Millisecond => value * 1_000,
-        duckdb::types::TimeUnit::Microsecond => value,
-        duckdb::types::TimeUnit::Nanosecond => value / 1_000,
-    };
-    let secs = (micros / 1_000_000) as u32;
-    let micro_part = (micros % 1_000_000) as u32;
-    let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, micro_part * 1000);
-    time.map(|t| t.format("%H:%M:%S%.6f").to_string())
-        .unwrap_or_else(|| "00:00:00".to_string())
-}
-
-fn format_timestamp(unit: duckdb::types::TimeUnit, value: i64) -> String {
-    let micros = match unit {
-        duckdb::types::TimeUnit::Second => value * 1_000_000,
-        duckdb::types::TimeUnit::Millisecond => value * 1_000,
-        duckdb::types::TimeUnit::Microsecond => value,
-        duckdb::types::TimeUnit::Nanosecond => value / 1_000,
-    };
-    let secs = micros / 1_000_000;
-    let nsecs = ((micros % 1_000_000) * 1000) as u32;
-    chrono::DateTime::from_timestamp(secs, nsecs)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string())
-        .unwrap_or_else(|| "1970-01-01 00:00:00".to_string())
 }
 
 fn format_interval(months: i32, days: i32, nanos: i64) -> String {
@@ -693,8 +736,8 @@ mod tests {
                 assert_eq!(columns[0].name, "num");
                 assert_eq!(columns[1].name, "msg");
                 assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0][0], Some("1".to_string()));
-                assert_eq!(rows[0][1], Some("hello".to_string()));
+                assert_eq!(rows[0][0], Value::Int32(1));
+                assert_eq!(rows[0][1], Value::Text("hello".to_string()));
             }
             _ => panic!("Expected Rows output"),
         }
@@ -841,7 +884,7 @@ mod tests {
         let result = conn.execute("SELECT NULL AS null_val").unwrap();
         match result {
             QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows[0][0], None);
+                assert_eq!(rows[0][0], Value::Null);
             }
             _ => panic!("Expected Rows output"),
         }
@@ -855,8 +898,8 @@ mod tests {
         let result = conn.execute("SELECT true AS t, false AS f").unwrap();
         match result {
             QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows[0][0], Some("t".to_string()));
-                assert_eq!(rows[0][1], Some("f".to_string()));
+                assert_eq!(rows[0][0], Value::Boolean(true));
+                assert_eq!(rows[0][1], Value::Boolean(false));
             }
             _ => panic!("Expected Rows output"),
         }
@@ -873,9 +916,13 @@ mod tests {
 
         match result {
             QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows[0][0], Some("42".to_string()));
-                assert!(rows[0][1].as_ref().unwrap().starts_with("3.14"));
-                assert_eq!(rows[0][2], Some("100".to_string()));
+                assert_eq!(rows[0][0], Value::Int32(42));
+                if let Value::Float64(d) = rows[0][1] {
+                    assert!((d - 3.14).abs() < 0.001);
+                } else {
+                    panic!("Expected Float64");
+                }
+                assert_eq!(rows[0][2], Value::Int64(100));
             }
             _ => panic!("Expected Rows output"),
         }
@@ -889,7 +936,7 @@ mod tests {
         let result = conn.execute("SELECT DATE '2024-01-15' AS d").unwrap();
         match result {
             QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows[0][0], Some("2024-01-15".to_string()));
+                assert_eq!(rows[0][0], Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()));
             }
             _ => panic!("Expected Rows output"),
         }

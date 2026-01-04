@@ -23,7 +23,7 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 
 use crate::auth::MallardbAuthSource;
-use crate::backend::{Backend, DuckDbConnection, QueryOutput};
+use crate::backend::{Backend, DuckDbConnection, QueryOutput, Value};
 use crate::catalog::{
     handle_catalog_query, handle_ignored_set, is_catalog_query, is_pg_ignored_set, rewrite_sql,
 };
@@ -215,9 +215,9 @@ fn query_output_to_response_text(output: QueryOutput) -> PgWireResult<Vec<Respon
 
 /// Encode rows into DataRow stream with per-column format
 fn encode_rows_per_column_format(
-    rows: Vec<Vec<Option<String>>>,
+    rows: Vec<Vec<Value>>,
     schema: Arc<Vec<FieldInfo>>,
-    type_names: Vec<String>,
+    _type_names: Vec<String>, // No longer needed - we have typed values
     column_formats: Vec<bool>, // true = binary, false = text
 ) -> impl Stream<Item = PgWireResult<DataRow>> {
     let mut results = Vec::new();
@@ -227,14 +227,8 @@ fn encode_rows_per_column_format(
         let mut success = true;
 
         for (i, value) in row.iter().enumerate() {
-            let type_name = type_names.get(i).map(|s| s.as_str()).unwrap_or("TEXT");
             let use_binary = column_formats.get(i).copied().unwrap_or(false);
-
-            let encode_result = if use_binary {
-                encode_value_binary(&mut encoder, value, type_name)
-            } else {
-                encode_value_text(&mut encoder, value)
-            };
+            let encode_result = encode_typed_value(&mut encoder, value, use_binary);
             if encode_result.is_err() {
                 success = false;
                 break;
@@ -249,111 +243,49 @@ fn encode_rows_per_column_format(
     stream::iter(results)
 }
 
-
-/// Encode a value in text format
-fn encode_value_text(encoder: &mut DataRowEncoder, value: &Option<String>) -> PgWireResult<()> {
-    match value {
-        Some(v) => encoder.encode_field(&v),
-        None => encoder.encode_field(&None::<String>),
-    }
-}
-
-/// Encode a value in binary format based on type
-fn encode_value_binary(
+/// Encode a typed Value - no parsing needed, direct encoding
+fn encode_typed_value(
     encoder: &mut DataRowEncoder,
-    value: &Option<String>,
-    type_name: &str,
+    value: &Value,
+    use_binary: bool,
 ) -> PgWireResult<()> {
     match value {
-        None => encoder.encode_field(&None::<i32>),
-        Some(v) => {
-            let upper = type_name.to_uppercase();
-            match upper.as_str() {
-                "BOOLEAN" | "BOOL" => {
-                    let b = v == "t" || v == "true" || v == "1";
-                    encoder.encode_field(&b)
-                }
-                "TINYINT" | "SMALLINT" | "INT2" => {
-                    let n: i16 = v.parse().unwrap_or(0);
-                    encoder.encode_field(&n)
-                }
-                "INTEGER" | "INT" | "INT4" => {
-                    let n: i32 = v.parse().unwrap_or(0);
-                    encoder.encode_field(&n)
-                }
-                "BIGINT" | "INT8" => {
-                    let n: i64 = v.parse().unwrap_or(0);
-                    encoder.encode_field(&n)
-                }
-                "FLOAT" | "FLOAT4" | "REAL" => {
-                    let n: f32 = v.parse().unwrap_or(0.0);
-                    encoder.encode_field(&n)
-                }
-                "DOUBLE" | "FLOAT8" => {
-                    let n: f64 = v.parse().unwrap_or(0.0);
-                    encoder.encode_field(&n)
-                }
-                // DECIMAL/NUMERIC - use rust_decimal for proper binary encoding
-                "DECIMAL" | "NUMERIC" | "HUGEINT" | "INT128" => {
-                    use rust_decimal::Decimal;
-                    use std::str::FromStr;
-                    match Decimal::from_str(v) {
-                        Ok(d) => encoder.encode_field(&d),
-                        Err(_) => encoder.encode_field(&v), // Fallback to text
-                    }
-                }
-                // Date - days since 2000-01-01
-                "DATE" => {
-                    use chrono::NaiveDate;
-                    match NaiveDate::parse_from_str(v, "%Y-%m-%d") {
-                        Ok(d) => encoder.encode_field(&d),
-                        Err(_) => encoder.encode_field(&v),
-                    }
-                }
-                // Time - microseconds since midnight
-                "TIME" | "TIMETZ" => {
-                    use chrono::NaiveTime;
-                    // Try common formats
-                    let parsed = NaiveTime::parse_from_str(v, "%H:%M:%S%.f")
-                        .or_else(|_| NaiveTime::parse_from_str(v, "%H:%M:%S"))
-                        .or_else(|_| NaiveTime::parse_from_str(v, "%H:%M"));
-                    match parsed {
-                        Ok(t) => encoder.encode_field(&t),
-                        Err(_) => encoder.encode_field(&v),
-                    }
-                }
-                // Timestamp - microseconds since 2000-01-01
-                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
-                    use chrono::NaiveDateTime;
-                    // Try common formats
-                    let parsed = NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S%.f")
-                        .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S"))
-                        .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S%.f"))
-                        .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S"));
-                    match parsed {
-                        Ok(ts) => encoder.encode_field(&ts),
-                        Err(_) => encoder.encode_field(&v),
-                    }
-                }
-                // Timestamp with timezone
-                "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
-                    use chrono::{DateTime, Utc, NaiveDateTime};
-                    // Try parsing with timezone, fallback to naive + UTC
-                    let parsed = DateTime::parse_from_rfc3339(v)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .or_else(|_| {
-                            // Try common PostgreSQL format
-                            NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S%.f")
-                                .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S"))
-                                .map(|ndt| ndt.and_utc())
-                        });
-                    match parsed {
-                        Ok(ts) => encoder.encode_field(&ts),
-                        Err(_) => encoder.encode_field(&v),
-                    }
-                }
-                // For text types and anything else, send as text
-                _ => encoder.encode_field(&v),
+        Value::Null => encoder.encode_field(&None::<i32>),
+        Value::Boolean(b) => encoder.encode_field(b),
+        Value::Int16(n) => encoder.encode_field(n),
+        Value::Int32(n) => encoder.encode_field(n),
+        Value::Int64(n) => encoder.encode_field(n),
+        Value::Float32(n) => encoder.encode_field(n),
+        Value::Float64(n) => encoder.encode_field(n),
+        Value::Decimal(d) => encoder.encode_field(d),
+        Value::Text(s) => encoder.encode_field(s),
+        Value::Bytes(b) => encoder.encode_field(b),
+        Value::Date(d) => {
+            if use_binary {
+                encoder.encode_field(d)
+            } else {
+                encoder.encode_field(&d.format("%Y-%m-%d").to_string())
+            }
+        }
+        Value::Time(t) => {
+            if use_binary {
+                encoder.encode_field(t)
+            } else {
+                encoder.encode_field(&t.format("%H:%M:%S%.6f").to_string())
+            }
+        }
+        Value::Timestamp(ts) => {
+            if use_binary {
+                encoder.encode_field(ts)
+            } else {
+                encoder.encode_field(&ts.format("%Y-%m-%d %H:%M:%S%.6f").to_string())
+            }
+        }
+        Value::TimestampTz(ts) => {
+            if use_binary {
+                encoder.encode_field(ts)
+            } else {
+                encoder.encode_field(&ts.format("%Y-%m-%d %H:%M:%S%.6f%z").to_string())
             }
         }
     }

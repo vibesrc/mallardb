@@ -3,7 +3,7 @@
 //! Intercepts queries to pg_catalog and information_schema and either
 //! translates them to DuckDB equivalents or synthesizes responses.
 
-use crate::backend::{ColumnInfo, QueryOutput};
+use crate::backend::{ColumnInfo, QueryOutput, Value};
 
 // Re-export rewrite_sql from sql_rewriter module
 pub use crate::sql_rewriter::rewrite_sql;
@@ -109,7 +109,7 @@ pub fn handle_catalog_query(
                 name: "search_path".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some("main".to_string())]],
+            rows: vec![vec![Value::Text("main".to_string())]],
         });
     }
     // Let other SHOW commands pass through to DuckDB
@@ -121,7 +121,7 @@ pub fn handle_catalog_query(
                 name: "version".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some(format!(
+            rows: vec![vec![Value::Text(format!(
                 "PostgreSQL {} (mallardb 0.1.0, DuckDB 1.0.0)",
                 pg_version
             ))]],
@@ -134,7 +134,7 @@ pub fn handle_catalog_query(
                 name: "current_database".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some(database.to_string())]],
+            rows: vec![vec![Value::Text(database.to_string())]],
         });
     }
 
@@ -144,7 +144,7 @@ pub fn handle_catalog_query(
                 name: "current_schema".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some("main".to_string())]],
+            rows: vec![vec![Value::Text("main".to_string())]],
         });
     }
 
@@ -154,7 +154,7 @@ pub fn handle_catalog_query(
                 name: "current_user".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some(username.to_string())]],
+            rows: vec![vec![Value::Text(username.to_string())]],
         });
     }
 
@@ -164,7 +164,7 @@ pub fn handle_catalog_query(
                 name: "session_user".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some(username.to_string())]],
+            rows: vec![vec![Value::Text(username.to_string())]],
         });
     }
 
@@ -174,7 +174,7 @@ pub fn handle_catalog_query(
                 name: "pg_backend_pid".to_string(),
                 type_name: "INT4".to_string(),
             }],
-            rows: vec![vec![Some(std::process::id().to_string())]],
+            rows: vec![vec![Value::Text(std::process::id().to_string())]],
         });
     }
 
@@ -214,7 +214,7 @@ pub fn handle_catalog_query(
                 name: "description".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![None]],
+            rows: vec![vec![Value::Null]],
         });
     }
 
@@ -228,7 +228,7 @@ pub fn handle_catalog_query(
                 name: "has_privilege".to_string(),
                 type_name: "BOOL".to_string(),
             }],
-            rows: vec![vec![Some("t".to_string())]],
+            rows: vec![vec![Value::Text("t".to_string())]],
         });
     }
 
@@ -239,7 +239,7 @@ pub fn handle_catalog_query(
                 name: "pg_encoding_to_char".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some("UTF8".to_string())]],
+            rows: vec![vec![Value::Text("UTF8".to_string())]],
         });
     }
 
@@ -250,7 +250,7 @@ pub fn handle_catalog_query(
                 name: "username".to_string(),
                 type_name: "TEXT".to_string(),
             }],
-            rows: vec![vec![Some(username.to_string())]],
+            rows: vec![vec![Value::Text(username.to_string())]],
         });
     }
 
@@ -317,20 +317,20 @@ fn handle_pg_database_query(database: &str) -> QueryOutput {
             },
         ],
         rows: vec![vec![
-            Some("1".to_string()),
-            Some(database.to_string()),
-            Some("10".to_string()),
-            Some("6".to_string()), // UTF8
-            Some("C".to_string()),
-            Some("C".to_string()),
-            Some("f".to_string()),
-            Some("t".to_string()),
-            Some("-1".to_string()),
+            Value::Text("1".to_string()),
+            Value::Text(database.to_string()),
+            Value::Text("10".to_string()),
+            Value::Text("6".to_string()), // UTF8
+            Value::Text("C".to_string()),
+            Value::Text("C".to_string()),
+            Value::Text("f".to_string()),
+            Value::Text("t".to_string()),
+            Value::Text("-1".to_string()),
             // Alias values
-            Some(database.to_string()),              // label
-            Some(database.to_string()),              // database
-            Some("connection.database".to_string()), // type
-            Some("database".to_string()),            // detail
+            Value::Text(database.to_string()),              // label
+            Value::Text(database.to_string()),              // database
+            Value::Text("connection.database".to_string()), // type
+            Value::Text("database".to_string()),            // detail
         ]],
     }
 }
@@ -372,14 +372,14 @@ fn handle_pg_roles_query(username: &str) -> QueryOutput {
             },
         ],
         rows: vec![vec![
-            Some("10".to_string()),
-            Some(username.to_string()),
-            Some("t".to_string()),
-            Some("t".to_string()),
-            Some("t".to_string()),
-            Some("t".to_string()),
-            Some("t".to_string()),
-            Some("-1".to_string()),
+            Value::Text("10".to_string()),
+            Value::Text(username.to_string()),
+            Value::Text("t".to_string()),
+            Value::Text("t".to_string()),
+            Value::Text("t".to_string()),
+            Value::Text("t".to_string()),
+            Value::Text("t".to_string()),
+            Value::Text("-1".to_string()),
         ]],
     }
 }
@@ -396,9 +396,9 @@ fn handle_pg_settings_query(pg_version: &str) -> QueryOutput {
         ("max_connections", "100"),
     ];
 
-    let rows: Vec<Vec<Option<String>>> = settings
+    let rows: Vec<Vec<Value>> = settings
         .iter()
-        .map(|(name, setting)| vec![Some(name.to_string()), Some(setting.to_string())])
+        .map(|(name, setting)| vec![Value::Text(name.to_string()), Value::Text(setting.to_string())])
         .collect();
 
     QueryOutput::Rows {
@@ -441,11 +441,11 @@ fn handle_pg_stat_activity_query(database: &str, username: &str) -> QueryOutput 
             },
         ],
         rows: vec![vec![
-            Some("1".to_string()),
-            Some(database.to_string()),
-            Some(std::process::id().to_string()),
-            Some(username.to_string()),
-            Some("active".to_string()),
+            Value::Text("1".to_string()),
+            Value::Text(database.to_string()),
+            Value::Text(std::process::id().to_string()),
+            Value::Text(username.to_string()),
+            Value::Text("active".to_string()),
         ]],
     }
 }
@@ -566,8 +566,8 @@ mod tests {
         let output = result.unwrap();
         if let QueryOutput::Rows { columns, rows } = output {
             assert_eq!(columns[0].name, "version");
-            assert!(rows[0][0].as_ref().unwrap().contains("PostgreSQL 15.0"));
-            assert!(rows[0][0].as_ref().unwrap().contains("mallardb"));
+            assert!(rows[0][0].as_text().unwrap().contains("PostgreSQL 15.0"));
+            assert!(rows[0][0].as_text().unwrap().contains("mallardb"));
         } else {
             panic!("Expected Rows output");
         }
@@ -578,7 +578,7 @@ mod tests {
         let result = handle_catalog_query("SELECT current_database()", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("mydb".to_string()));
+            assert_eq!(rows[0][0], Value::Text("mydb".to_string()));
         } else {
             panic!("Expected Rows output");
         }
@@ -589,7 +589,7 @@ mod tests {
         let result = handle_catalog_query("SELECT current_schema()", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("main".to_string()));
+            assert_eq!(rows[0][0], Value::Text("main".to_string()));
         } else {
             panic!("Expected Rows output");
         }
@@ -600,7 +600,7 @@ mod tests {
         let result = handle_catalog_query("SELECT current_user", "mydb", "admin", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("admin".to_string()));
+            assert_eq!(rows[0][0], Value::Text("admin".to_string()));
         } else {
             panic!("Expected Rows output");
         }
@@ -611,7 +611,7 @@ mod tests {
         let result = handle_catalog_query("SELECT session_user", "mydb", "admin", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("admin".to_string()));
+            assert_eq!(rows[0][0], Value::Text("admin".to_string()));
         } else {
             panic!("Expected Rows output");
         }
@@ -622,7 +622,7 @@ mod tests {
         let result = handle_catalog_query("SELECT pg_backend_pid()", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            let pid: u32 = rows[0][0].as_ref().unwrap().parse().unwrap();
+            let pid: u32 = rows[0][0].as_text().unwrap().parse().unwrap();
             assert!(pid > 0);
         } else {
             panic!("Expected Rows output");
@@ -643,7 +643,7 @@ mod tests {
         assert!(result.is_some());
         if let QueryOutput::Rows { columns, rows } = result.unwrap() {
             assert!(columns.iter().any(|c| c.name == "datname"));
-            assert_eq!(rows[0][1], Some("testdb".to_string())); // datname
+            assert_eq!(rows[0][1], Value::Text("testdb".to_string())); // datname
         } else {
             panic!("Expected Rows output");
         }
@@ -661,7 +661,7 @@ mod tests {
         let result = handle_catalog_query("SELECT * FROM pg_roles", "mydb", "admin", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][1], Some("admin".to_string())); // rolname
+            assert_eq!(rows[0][1], Value::Text("admin".to_string())); // rolname
         } else {
             panic!("Expected Rows output");
         }
@@ -681,9 +681,9 @@ mod tests {
             assert!(columns.iter().any(|c| c.name == "name"));
             assert!(columns.iter().any(|c| c.name == "setting"));
             // Check for some expected settings
-            let names: Vec<String> = rows.iter().filter_map(|r| r[0].clone()).collect();
-            assert!(names.contains(&"server_version".to_string()));
-            assert!(names.contains(&"server_encoding".to_string()));
+            let names: Vec<&str> = rows.iter().filter_map(|r| r[0].as_text()).collect();
+            assert!(names.contains(&"server_version"));
+            assert!(names.contains(&"server_encoding"));
         } else {
             panic!("Expected Rows output");
         }
@@ -698,9 +698,9 @@ mod tests {
             assert!(columns.iter().any(|c| c.name == "datname"));
             assert!(columns.iter().any(|c| c.name == "usename"));
             assert!(columns.iter().any(|c| c.name == "state"));
-            assert_eq!(rows[0][1], Some("mydb".to_string())); // datname
-            assert_eq!(rows[0][3], Some("testuser".to_string())); // usename
-            assert_eq!(rows[0][4], Some("active".to_string())); // state
+            assert_eq!(rows[0][1], Value::Text("mydb".to_string())); // datname
+            assert_eq!(rows[0][3], Value::Text("testuser".to_string())); // usename
+            assert_eq!(rows[0][4], Value::Text("active".to_string())); // state
         } else {
             panic!("Expected Rows output");
         }
@@ -731,7 +731,7 @@ mod tests {
         );
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("t".to_string())); // Always returns true
+            assert_eq!(rows[0][0], Value::Text("t".to_string())); // Always returns true
         } else {
             panic!("Expected Rows output");
         }
@@ -743,7 +743,7 @@ mod tests {
             handle_catalog_query("SELECT pg_encoding_to_char(6)", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("UTF8".to_string()));
+            assert_eq!(rows[0][0], Value::Text("UTF8".to_string()));
         } else {
             panic!("Expected Rows output");
         }
@@ -793,7 +793,7 @@ mod tests {
         let result = handle_catalog_query("SELECT pg_get_userbyid(10)", "mydb", "testuser", "15.0");
         assert!(result.is_some());
         if let QueryOutput::Rows { rows, .. } = result.unwrap() {
-            assert_eq!(rows[0][0], Some("testuser".to_string()));
+            assert_eq!(rows[0][0], Value::Text("testuser".to_string()));
         } else {
             panic!("Expected Rows output");
         }
