@@ -25,8 +25,10 @@ use pgwire::messages::data::DataRow;
 use crate::auth::MallardbAuthSource;
 use crate::backend::{Backend, DuckDbConnection, QueryOutput, Value};
 use crate::catalog::{
-    handle_catalog_query, handle_ignored_set, is_catalog_query, is_pg_ignored_set, rewrite_sql,
+    handle_catalog_query, handle_ignored_set, is_catalog_query, is_catalog_query_from_kind,
+    is_pg_ignored_set_from_kind, rewrite_sql,
 };
+use crate::sql_rewriter::parse_sql;
 use crate::config::Config;
 use crate::types::duckdb_type_to_pgwire;
 
@@ -65,14 +67,17 @@ impl MallardbHandler {
         let sql = &sql.replace('\0', "");
         debug!("Executing query: {}", sql);
 
+        // Parse once for all checks
+        let parsed = parse_sql(sql);
+
         // Handle PostgreSQL-specific SET commands that DuckDB doesn't support
-        if is_pg_ignored_set(sql) {
+        if is_pg_ignored_set_from_kind(sql, parsed.kind) {
             debug!("Ignoring PostgreSQL-specific SET command");
             return Ok(handle_ignored_set());
         }
 
         // Check for catalog queries first
-        if is_catalog_query(sql)
+        if is_catalog_query_from_kind(sql, parsed.kind)
             && let Some(result) = handle_catalog_query(
                 sql,
                 &self.config.postgres_db,

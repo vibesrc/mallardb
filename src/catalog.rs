@@ -4,7 +4,9 @@
 //! translates them to DuckDB equivalents or synthesizes responses.
 
 use crate::backend::{ColumnInfo, QueryOutput, Value};
-use crate::sql_rewriter::{contains_catalog_reference, get_set_variable, is_show_statement};
+use crate::sql_rewriter::{
+    contains_catalog_reference, get_set_variable_from_kind, is_show_statement, StatementKind,
+};
 
 // Re-export rewrite_sql from sql_rewriter module
 pub use crate::sql_rewriter::rewrite_sql;
@@ -33,13 +35,18 @@ const PG_IGNORED_SET_PARAMS: &[&str] = &[
     "jit",
 ];
 
-/// Check if this is a SET command for a PostgreSQL-specific parameter
-/// that should be silently ignored for compatibility
-pub fn is_pg_ignored_set(sql: &str) -> bool {
-    if let Some(var_name) = get_set_variable(sql) {
+/// Check if this is a SET command for a PostgreSQL-specific parameter (with pre-parsed kind)
+pub fn is_pg_ignored_set_from_kind(sql: &str, kind: StatementKind) -> bool {
+    if let Some(var_name) = get_set_variable_from_kind(sql, kind) {
         return PG_IGNORED_SET_PARAMS.iter().any(|&p| var_name == p);
     }
     false
+}
+
+/// Check if this is a SET command for a PostgreSQL-specific parameter
+/// that should be silently ignored for compatibility
+pub fn is_pg_ignored_set(sql: &str) -> bool {
+    is_pg_ignored_set_from_kind(sql, crate::sql_rewriter::classify_statement(sql))
 }
 
 /// Handle an ignored SET command by returning a synthetic SET response
@@ -49,11 +56,16 @@ pub fn handle_ignored_set() -> QueryOutput {
     }
 }
 
+/// Check if a query targets the catalog system (with pre-parsed kind)
+pub fn is_catalog_query_from_kind(sql: &str, kind: StatementKind) -> bool {
+    kind == StatementKind::Show || contains_catalog_reference(sql)
+}
+
 /// Check if a query targets the catalog system that we need to intercept
 /// NOTE: Many pg_catalog tables are handled natively by DuckDB - only intercept
 /// what requires PostgreSQL-specific emulation (auth, sessions, version info)
 pub fn is_catalog_query(sql: &str) -> bool {
-    is_show_statement(sql) || contains_catalog_reference(sql)
+    is_catalog_query_from_kind(sql, crate::sql_rewriter::classify_statement(sql))
 }
 
 /// Handle a catalog query and return synthetic results
