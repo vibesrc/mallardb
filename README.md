@@ -10,6 +10,14 @@ One container. No cluster. No warehouse bills.
 
 ![meme](docs/meme.png)
 
+## Why This Exists
+
+DuckDB can query anything (Parquet files, S3 buckets, PostgreSQL, MySQL, SQLite, CSV, JSON) and join them all in a single query. It stores data in a fast columnar format with ETL built right into the database. But DuckDB is an embedded engine. It doesn't speak PostgreSQL wire protocol.
+
+Your BI tools do. Tableau, Metabase, Grafana, dbt: they all expect a PostgreSQL endpoint.
+
+mallardb bridges that gap. One connection string gives your tools access to DuckDB's full power: federated queries across sources, columnar storage, vectorized execution, and extensions for everything from spatial data to machine learning. No warehouse cluster. No per-query billing. Just a PostgreSQL endpoint backed by DuckDB.
+
 ## The Simple Stack
 
 ```
