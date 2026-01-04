@@ -34,6 +34,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      MALLARDB_PASSWORD: testpassword
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +43,7 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib
       - name: Run integration tests
-        run: cargo test --test integration_test -- --ignored
+        run: make test-ci
 
   build:
     name: Build
