@@ -137,6 +137,125 @@ pub fn returns_rows(sql: &str) -> bool {
     matches!(classify_statement(sql), StatementKind::Select)
 }
 
+/// Check if a statement is a SHOW command
+pub fn is_show_statement(sql: &str) -> bool {
+    let trimmed = sql.trim();
+    let dialect = PostgreSqlDialect {};
+    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
+        && let Some(stmt) = statements.first()
+    {
+        return matches!(
+            stmt,
+            Statement::ShowTables { .. }
+                | Statement::ShowColumns { .. }
+                | Statement::ShowFunctions { .. }
+                | Statement::ShowVariable { .. }
+                | Statement::ShowStatus { .. }
+                | Statement::ShowCreate { .. }
+        );
+    }
+    // Fallback
+    trimmed.to_uppercase().starts_with("SHOW")
+}
+
+/// Extract the variable name from a SET statement, if it is one
+pub fn get_set_variable(sql: &str) -> Option<String> {
+    let trimmed = sql.trim();
+    let dialect = PostgreSqlDialect {};
+    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
+        && let Some(Statement::Set(set_expr)) = statements.first()
+    {
+        // SetExpr contains the variable info - extract the variable name
+        let set_str = set_expr.to_string();
+        // Parse "SET var = value" or "SET var TO value" to extract var
+        let set_str = set_str.strip_prefix("SET ").unwrap_or(&set_str);
+        if let Some(var) = set_str.split_whitespace().next() {
+            return Some(var.to_lowercase());
+        }
+    }
+    // Fallback: string parsing
+    let upper = trimmed.to_uppercase();
+    if upper.starts_with("SET ") {
+        let rest = trimmed[4..].trim();
+        if let Some(var) = rest.split_whitespace().next() {
+            // Strip any = that might be attached
+            let var = var.trim_end_matches('=');
+            return Some(var.to_lowercase());
+        }
+    }
+    None
+}
+
+/// Get the transaction command tag (BEGIN, COMMIT, ROLLBACK, SAVEPOINT)
+pub fn get_transaction_tag(sql: &str) -> &'static str {
+    let trimmed = sql.trim();
+    let dialect = PostgreSqlDialect {};
+    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
+        && let Some(stmt) = statements.first()
+    {
+        return match stmt {
+            Statement::StartTransaction { .. } => "BEGIN",
+            Statement::Commit { .. } => "COMMIT",
+            Statement::Rollback { .. } => "ROLLBACK",
+            Statement::Savepoint { .. } => "SAVEPOINT",
+            _ => "UNKNOWN",
+        };
+    }
+    // Fallback
+    let upper = trimmed.to_uppercase();
+    if upper.starts_with("BEGIN") || upper.starts_with("START") {
+        "BEGIN"
+    } else if upper.starts_with("COMMIT") {
+        "COMMIT"
+    } else if upper.starts_with("ROLLBACK") {
+        "ROLLBACK"
+    } else if upper.starts_with("SAVEPOINT") {
+        "SAVEPOINT"
+    } else {
+        "UNKNOWN"
+    }
+}
+
+/// Extract the DDL command tag (CREATE TABLE, DROP VIEW, etc.)
+pub fn get_ddl_tag(sql: &str) -> String {
+    let trimmed = sql.trim();
+    let dialect = PostgreSqlDialect {};
+    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
+        && let Some(stmt) = statements.first()
+    {
+        return match stmt {
+            Statement::CreateTable { .. } => "CREATE TABLE".to_string(),
+            Statement::CreateIndex(_) => "CREATE INDEX".to_string(),
+            Statement::CreateView { .. } => "CREATE VIEW".to_string(),
+            Statement::CreateSchema { .. } => "CREATE SCHEMA".to_string(),
+            Statement::CreateDatabase { .. } => "CREATE DATABASE".to_string(),
+            Statement::CreateFunction { .. } => "CREATE FUNCTION".to_string(),
+            Statement::CreateExtension { .. } => "CREATE EXTENSION".to_string(),
+            Statement::CreateType { .. } => "CREATE TYPE".to_string(),
+            Statement::CreateRole { .. } => "CREATE ROLE".to_string(),
+            Statement::CreateSequence { .. } => "CREATE SEQUENCE".to_string(),
+            Statement::Drop { object_type, .. } => format!("DROP {}", object_type),
+            Statement::DropFunction { .. } => "DROP FUNCTION".to_string(),
+            Statement::AlterTable { .. } => "ALTER TABLE".to_string(),
+            Statement::AlterIndex { .. } => "ALTER INDEX".to_string(),
+            Statement::AlterView { .. } => "ALTER VIEW".to_string(),
+            Statement::AlterRole { .. } => "ALTER ROLE".to_string(),
+            Statement::Truncate { .. } => "TRUNCATE TABLE".to_string(),
+            _ => "DDL".to_string(),
+        };
+    }
+    // Fallback: extract first 2-3 words
+    let upper = trimmed.to_uppercase();
+    let words: Vec<&str> = upper.split_whitespace().take(3).collect();
+    match words.as_slice() {
+        ["CREATE", obj, ..] => format!("CREATE {}", obj),
+        ["DROP", obj, ..] => format!("DROP {}", obj),
+        ["ALTER", obj, ..] => format!("ALTER {}", obj),
+        ["TRUNCATE", ..] => "TRUNCATE TABLE".to_string(),
+        _ => "DDL".to_string(),
+    }
+}
+
 /// Rewrite SQL for DuckDB compatibility
 /// Falls back to minimal string-based rewriting if parsing fails
 pub fn rewrite_sql(sql: &str, database: &str) -> String {

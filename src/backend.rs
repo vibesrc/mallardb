@@ -14,7 +14,7 @@ use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::error::MallardbError;
-use crate::sql_rewriter::{classify_statement, returns_rows, StatementKind};
+use crate::sql_rewriter::{classify_statement, get_ddl_tag, get_transaction_tag, returns_rows, StatementKind};
 
 /// Result type for query execution
 pub type QueryResult = Result<QueryOutput, MallardbError>;
@@ -160,7 +160,7 @@ fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
         StatementKind::Insert => execute_dml(conn, sql, "INSERT"),
         StatementKind::Update => execute_dml(conn, sql, "UPDATE"),
         StatementKind::Delete => execute_dml(conn, sql, "DELETE"),
-        StatementKind::Ddl => execute_ddl(conn, sql, extract_ddl_tag(trimmed)),
+        StatementKind::Ddl => execute_ddl(conn, sql, get_ddl_tag(trimmed)),
         StatementKind::Transaction => execute_transaction(conn, sql, trimmed),
         StatementKind::Set => execute_set(conn, sql),
         StatementKind::Copy | StatementKind::Other => execute_generic(conn, sql),
@@ -508,15 +508,7 @@ fn execute_transaction(_conn: &Connection, _sql: &str, sql: &str) -> QueryResult
     // For PostgreSQL client compatibility, completely ignore transaction commands.
     // DuckDB works in autocommit mode - each statement commits immediately.
     // Calling actual transaction commands can interfere with the connection state.
-    let upper = sql.to_uppercase();
-    let tag = if upper.starts_with("BEGIN") || upper.starts_with("START") {
-        "BEGIN"
-    } else if upper.starts_with("COMMIT") {
-        "COMMIT"
-    } else {
-        "ROLLBACK"
-    };
-
+    let tag = get_transaction_tag(sql);
     debug!("Ignoring transaction command: {}", tag);
     Ok(QueryOutput::Command {
         tag: tag.to_string(),
@@ -544,25 +536,6 @@ fn execute_generic(conn: &Connection, sql: &str) -> QueryResult {
                 Err(_) => Err(MallardbError::from_duckdb(e)),
             }
         }
-    }
-}
-
-fn extract_ddl_tag(sql: &str) -> String {
-    let upper = sql.to_uppercase();
-    let words: Vec<&str> = upper.split_whitespace().take(3).collect();
-    match words.as_slice() {
-        ["CREATE", "TABLE", ..] => "CREATE TABLE".to_string(),
-        ["CREATE", "INDEX", ..] => "CREATE INDEX".to_string(),
-        ["CREATE", "VIEW", ..] => "CREATE VIEW".to_string(),
-        ["CREATE", "SCHEMA", ..] => "CREATE SCHEMA".to_string(),
-        ["CREATE", "SEQUENCE", ..] => "CREATE SEQUENCE".to_string(),
-        ["CREATE", "TYPE", ..] => "CREATE TYPE".to_string(),
-        ["DROP", "TABLE", ..] => "DROP TABLE".to_string(),
-        ["DROP", "INDEX", ..] => "DROP INDEX".to_string(),
-        ["DROP", "VIEW", ..] => "DROP VIEW".to_string(),
-        ["DROP", "SCHEMA", ..] => "DROP SCHEMA".to_string(),
-        ["ALTER", "TABLE", ..] => "ALTER TABLE".to_string(),
-        _ => words.join(" "),
     }
 }
 

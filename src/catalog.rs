@@ -4,6 +4,7 @@
 //! translates them to DuckDB equivalents or synthesizes responses.
 
 use crate::backend::{ColumnInfo, QueryOutput, Value};
+use crate::sql_rewriter::{get_set_variable, is_show_statement};
 
 // Re-export rewrite_sql from sql_rewriter module
 pub use crate::sql_rewriter::rewrite_sql;
@@ -35,17 +36,8 @@ const PG_IGNORED_SET_PARAMS: &[&str] = &[
 /// Check if this is a SET command for a PostgreSQL-specific parameter
 /// that should be silently ignored for compatibility
 pub fn is_pg_ignored_set(sql: &str) -> bool {
-    let lower = sql.to_lowercase();
-    if !lower.starts_with("set ") {
-        return false;
-    }
-
-    // Extract the parameter name (SET param = value or SET param TO value)
-    let rest = lower.trim_start_matches("set ").trim();
-    for param in PG_IGNORED_SET_PARAMS {
-        if rest.starts_with(param) {
-            return true;
-        }
+    if let Some(var_name) = get_set_variable(sql) {
+        return PG_IGNORED_SET_PARAMS.iter().any(|&p| var_name == p);
     }
     false
 }
@@ -61,12 +53,15 @@ pub fn handle_ignored_set() -> QueryOutput {
 /// NOTE: Many pg_catalog tables are handled natively by DuckDB - only intercept
 /// what requires PostgreSQL-specific emulation (auth, sessions, version info)
 pub fn is_catalog_query(sql: &str) -> bool {
-    let lower = sql.to_lowercase();
+    // SHOW commands we must handle
+    if is_show_statement(sql) {
+        return true;
+    }
 
-    // Commands we must handle
-    lower.starts_with("show ")
-        // PostgreSQL-specific functions with no DuckDB equivalent
-        || lower.contains("current_database()")
+    // Check for PostgreSQL-specific functions/tables (case-insensitive content check)
+    let lower = sql.to_lowercase();
+    // PostgreSQL-specific functions with no DuckDB equivalent
+    lower.contains("current_database()")
         || lower.contains("current_schema()")
         || lower.contains("version()")
         || lower.contains("pg_backend_pid()")
@@ -102,8 +97,8 @@ pub fn handle_catalog_query(
 ) -> Option<QueryOutput> {
     let lower = sql.to_lowercase();
 
-    // Handle SHOW commands
-    if lower.starts_with("show ") && lower.contains("search_path") {
+    // Handle SHOW search_path specifically
+    if is_show_statement(sql) && lower.contains("search_path") {
         return Some(QueryOutput::Rows {
             columns: vec![ColumnInfo {
                 name: "search_path".to_string(),
