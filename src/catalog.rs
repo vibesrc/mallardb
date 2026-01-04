@@ -8,6 +8,55 @@ use crate::backend::{ColumnInfo, QueryOutput};
 // Re-export rewrite_sql from sql_rewriter module
 pub use crate::sql_rewriter::rewrite_sql;
 
+/// PostgreSQL-specific SET parameters that DuckDB doesn't support.
+/// These are silently accepted and ignored for compatibility.
+const PG_IGNORED_SET_PARAMS: &[&str] = &[
+    "extra_float_digits",
+    "application_name",
+    "datestyle",
+    "intervalstyle",
+    "timezone",
+    "client_encoding",
+    "standard_conforming_strings",
+    "statement_timeout",
+    "lock_timeout",
+    "idle_in_transaction_session_timeout",
+    "row_security",
+    "default_transaction_isolation",
+    "transaction_isolation",
+    "bytea_output",
+    "xmloption",
+    "client_min_messages",
+    "search_path",
+    "geqo",
+    "jit",
+];
+
+/// Check if this is a SET command for a PostgreSQL-specific parameter
+/// that should be silently ignored for compatibility
+pub fn is_pg_ignored_set(sql: &str) -> bool {
+    let lower = sql.to_lowercase();
+    if !lower.starts_with("set ") {
+        return false;
+    }
+
+    // Extract the parameter name (SET param = value or SET param TO value)
+    let rest = lower.trim_start_matches("set ").trim();
+    for param in PG_IGNORED_SET_PARAMS {
+        if rest.starts_with(param) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Handle an ignored SET command by returning a synthetic SET response
+pub fn handle_ignored_set() -> QueryOutput {
+    QueryOutput::Command {
+        tag: "SET".to_string(),
+    }
+}
+
 /// Check if a query targets the catalog system that we need to intercept
 /// NOTE: Many pg_catalog tables are handled natively by DuckDB - only intercept
 /// what requires PostgreSQL-specific emulation (auth, sessions, version info)
@@ -759,4 +808,40 @@ mod tests {
     // NOTE: current_setting is now handled by DuckDB macros in backend.rs
 
     // NOTE: SQL rewriting tests are now in sql_rewriter module
+
+    // ===== is_pg_ignored_set tests =====
+
+    #[test]
+    fn test_is_pg_ignored_set_extra_float_digits() {
+        assert!(is_pg_ignored_set("SET extra_float_digits = 3"));
+        assert!(is_pg_ignored_set("SET extra_float_digits TO 3"));
+        assert!(is_pg_ignored_set("set EXTRA_FLOAT_DIGITS = 2"));
+    }
+
+    #[test]
+    fn test_is_pg_ignored_set_common_params() {
+        assert!(is_pg_ignored_set("SET application_name = 'psql'"));
+        assert!(is_pg_ignored_set("SET datestyle = 'ISO, MDY'"));
+        assert!(is_pg_ignored_set("SET timezone = 'UTC'"));
+        assert!(is_pg_ignored_set("SET client_encoding = 'UTF8'"));
+        assert!(is_pg_ignored_set("SET search_path = 'public'"));
+        assert!(is_pg_ignored_set("SET statement_timeout = 0"));
+    }
+
+    #[test]
+    fn test_is_pg_ignored_set_false_for_duckdb_params() {
+        // DuckDB-supported params should NOT be ignored
+        assert!(!is_pg_ignored_set("SET threads = 4"));
+        assert!(!is_pg_ignored_set("SET memory_limit = '4GB'"));
+        assert!(!is_pg_ignored_set("SET enable_progress_bar = true"));
+    }
+
+    #[test]
+    fn test_is_pg_ignored_set_false_for_non_set() {
+        assert!(!is_pg_ignored_set("SELECT extra_float_digits"));
+        assert!(!is_pg_ignored_set("SHOW extra_float_digits"));
+        assert!(!is_pg_ignored_set(
+            "INSERT INTO settings VALUES ('extra_float_digits')"
+        ));
+    }
 }

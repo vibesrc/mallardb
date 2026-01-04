@@ -24,7 +24,9 @@ use pgwire::messages::data::DataRow;
 
 use crate::auth::MallardbAuthSource;
 use crate::backend::{Backend, DuckDbConnection, QueryOutput};
-use crate::catalog::{handle_catalog_query, is_catalog_query, rewrite_sql};
+use crate::catalog::{
+    handle_catalog_query, handle_ignored_set, is_catalog_query, is_pg_ignored_set, rewrite_sql,
+};
 use crate::config::Config;
 use crate::types::duckdb_type_to_pgwire;
 
@@ -63,6 +65,12 @@ impl MallardbHandler {
         let sql = &sql.replace('\0', "");
         debug!("Executing query: {}", sql);
 
+        // Handle PostgreSQL-specific SET commands that DuckDB doesn't support
+        if is_pg_ignored_set(sql) {
+            debug!("Ignoring PostgreSQL-specific SET command");
+            return Ok(handle_ignored_set());
+        }
+
         // Check for catalog queries first
         if is_catalog_query(sql)
             && let Some(result) = handle_catalog_query(
@@ -94,31 +102,93 @@ impl MallardbHandler {
     }
 }
 
+/// Check if we can properly encode a type in binary format
+fn can_encode_type_as_binary(type_name: &str) -> bool {
+    let upper = type_name.to_uppercase();
+    let base_type = if upper.contains('(') {
+        upper.split('(').next().unwrap_or(&upper)
+    } else {
+        &upper
+    };
+
+    matches!(
+        base_type.trim(),
+        // Numeric types
+        "BOOLEAN" | "BOOL"
+            | "TINYINT"
+            | "SMALLINT"
+            | "INT2"
+            | "INTEGER"
+            | "INT"
+            | "INT4"
+            | "SIGNED"
+            | "BIGINT"
+            | "INT8"
+            | "LONG"
+            | "FLOAT"
+            | "FLOAT4"
+            | "REAL"
+            | "DOUBLE"
+            | "FLOAT8"
+            | "DECIMAL"
+            | "NUMERIC"
+            // Date/time types
+            | "DATE"
+            | "TIME"
+            | "TIMESTAMP"
+            | "TIMESTAMPTZ"
+    )
+    // Types we still cannot encode in binary:
+    // HUGEINT (too large), INTERVAL (complex), etc.
+}
+
 /// Convert QueryOutput to pgwire Response with specified format
 fn query_output_to_response(output: QueryOutput, format: &Format) -> PgWireResult<Vec<Response>> {
     match output {
         QueryOutput::Rows { columns, rows } => {
-            // Determine the field format based on client request
-            let use_binary = matches!(format, Format::UnifiedBinary);
-            let field_format = if use_binary {
-                FieldFormat::Binary
-            } else {
-                FieldFormat::Text
-            };
-
             // Extract type names for encoding
             let type_names: Vec<String> = columns.iter().map(|c| c.type_name.clone()).collect();
 
+            // Determine per-column format based on client request
+            let column_formats: Vec<bool> = columns
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    // Check what the client requested for this column
+                    let client_wants_binary = match format {
+                        Format::UnifiedBinary => true,
+                        Format::UnifiedText => false,
+                        Format::Individual(formats) => formats.get(i).map(|&f| f == 1).unwrap_or(false),
+                    };
+                    // Only use binary if client wants it AND we can encode this type in binary
+                    let can_encode_binary = can_encode_type_as_binary(&col.type_name);
+                    let use_binary = client_wants_binary && can_encode_binary;
+
+                    debug!(
+                        "Column '{}' type='{}' client_wants_binary={} can_encode={} -> use_binary={}",
+                        col.name, col.type_name, client_wants_binary, can_encode_binary, use_binary
+                    );
+                    use_binary
+                })
+                .collect();
+
             let field_infos: Vec<FieldInfo> = columns
                 .iter()
-                .map(|col| {
+                .enumerate()
+                .map(|(i, col)| {
                     let pg_type = duckdb_type_to_pgwire(&col.type_name);
+                    // FieldInfo format must match what we'll actually encode
+                    let field_format = if column_formats[i] {
+                        FieldFormat::Binary
+                    } else {
+                        FieldFormat::Text
+                    };
                     FieldInfo::new(col.name.clone(), None, None, pg_type, field_format)
                 })
                 .collect();
 
             let header = Arc::new(field_infos);
-            let data_rows = encode_rows_with_format(rows, header.clone(), type_names, use_binary);
+            let data_rows = encode_rows_per_column_format(rows, header.clone(), type_names, column_formats);
 
             Ok(vec![Response::Query(QueryResponse::new(header, data_rows))])
         }
@@ -143,12 +213,12 @@ fn query_output_to_response_text(output: QueryOutput) -> PgWireResult<Vec<Respon
     query_output_to_response(output, &Format::UnifiedText)
 }
 
-/// Encode rows into DataRow stream with specified format
-fn encode_rows_with_format(
+/// Encode rows into DataRow stream with per-column format
+fn encode_rows_per_column_format(
     rows: Vec<Vec<Option<String>>>,
     schema: Arc<Vec<FieldInfo>>,
     type_names: Vec<String>,
-    use_binary: bool,
+    column_formats: Vec<bool>, // true = binary, false = text
 ) -> impl Stream<Item = PgWireResult<DataRow>> {
     let mut results = Vec::new();
 
@@ -158,6 +228,8 @@ fn encode_rows_with_format(
 
         for (i, value) in row.iter().enumerate() {
             let type_name = type_names.get(i).map(|s| s.as_str()).unwrap_or("TEXT");
+            let use_binary = column_formats.get(i).copied().unwrap_or(false);
+
             let encode_result = if use_binary {
                 encode_value_binary(&mut encoder, value, type_name)
             } else {
@@ -176,6 +248,7 @@ fn encode_rows_with_format(
 
     stream::iter(results)
 }
+
 
 /// Encode a value in text format
 fn encode_value_text(encoder: &mut DataRowEncoder, value: &Option<String>) -> PgWireResult<()> {
@@ -219,6 +292,65 @@ fn encode_value_binary(
                 "DOUBLE" | "FLOAT8" => {
                     let n: f64 = v.parse().unwrap_or(0.0);
                     encoder.encode_field(&n)
+                }
+                // DECIMAL/NUMERIC - use rust_decimal for proper binary encoding
+                "DECIMAL" | "NUMERIC" | "HUGEINT" | "INT128" => {
+                    use rust_decimal::Decimal;
+                    use std::str::FromStr;
+                    match Decimal::from_str(v) {
+                        Ok(d) => encoder.encode_field(&d),
+                        Err(_) => encoder.encode_field(&v), // Fallback to text
+                    }
+                }
+                // Date - days since 2000-01-01
+                "DATE" => {
+                    use chrono::NaiveDate;
+                    match NaiveDate::parse_from_str(v, "%Y-%m-%d") {
+                        Ok(d) => encoder.encode_field(&d),
+                        Err(_) => encoder.encode_field(&v),
+                    }
+                }
+                // Time - microseconds since midnight
+                "TIME" | "TIMETZ" => {
+                    use chrono::NaiveTime;
+                    // Try common formats
+                    let parsed = NaiveTime::parse_from_str(v, "%H:%M:%S%.f")
+                        .or_else(|_| NaiveTime::parse_from_str(v, "%H:%M:%S"))
+                        .or_else(|_| NaiveTime::parse_from_str(v, "%H:%M"));
+                    match parsed {
+                        Ok(t) => encoder.encode_field(&t),
+                        Err(_) => encoder.encode_field(&v),
+                    }
+                }
+                // Timestamp - microseconds since 2000-01-01
+                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
+                    use chrono::NaiveDateTime;
+                    // Try common formats
+                    let parsed = NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S%.f")
+                        .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S"))
+                        .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S%.f"))
+                        .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S"));
+                    match parsed {
+                        Ok(ts) => encoder.encode_field(&ts),
+                        Err(_) => encoder.encode_field(&v),
+                    }
+                }
+                // Timestamp with timezone
+                "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
+                    use chrono::{DateTime, Utc, NaiveDateTime};
+                    // Try parsing with timezone, fallback to naive + UTC
+                    let parsed = DateTime::parse_from_rfc3339(v)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .or_else(|_| {
+                            // Try common PostgreSQL format
+                            NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S%.f")
+                                .or_else(|_| NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S"))
+                                .map(|ndt| ndt.and_utc())
+                        });
+                    match parsed {
+                        Ok(ts) => encoder.encode_field(&ts),
+                        Err(_) => encoder.encode_field(&v),
+                    }
                 }
                 // For text types and anything else, send as text
                 _ => encoder.encode_field(&v),
@@ -377,11 +509,14 @@ impl ExtendedQueryHandler for MallardbHandler {
             .unwrap_or(&self.config.postgres_user);
 
         let result = self.execute_query(&query, username)?;
+        debug!("Query result obtained, converting to response with format {:?}", portal.result_column_format);
         let responses = query_output_to_response(result, &portal.result_column_format)?;
-        Ok(responses
+        let response = responses
             .into_iter()
             .next()
-            .unwrap_or(Response::Execution(Tag::new("OK"))))
+            .unwrap_or(Response::Execution(Tag::new("OK")));
+        debug!("Response created successfully");
+        Ok(response)
     }
 
     async fn do_describe_statement<C>(

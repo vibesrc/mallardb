@@ -73,16 +73,7 @@ impl DuckDbConnection {
 
     /// Execute a query
     pub fn execute(&self, sql: &str) -> QueryResult {
-        let result = execute_query(&self.conn, sql);
-
-        // Auto-rollback on error to prevent "transaction aborted" deadlock
-        if let Err(ref e) = result {
-            debug!("Query error: {:?}", e);
-            debug!("Auto-rolling back after error");
-            let _ = self.conn.execute("ROLLBACK", []);
-        }
-
-        result
+        execute_query(&self.conn, sql)
     }
 
     /// Describe a query to get its column schema without returning data
@@ -489,9 +480,10 @@ fn execute_ddl(conn: &Connection, sql: &str, tag: String) -> QueryResult {
     Ok(QueryOutput::Command { tag })
 }
 
-fn execute_transaction(conn: &Connection, sql: &str, upper: &str) -> QueryResult {
-    conn.execute(sql, []).map_err(MallardbError::from_duckdb)?;
-
+fn execute_transaction(_conn: &Connection, _sql: &str, upper: &str) -> QueryResult {
+    // For PostgreSQL client compatibility, completely ignore transaction commands.
+    // DuckDB works in autocommit mode - each statement commits immediately.
+    // Calling actual transaction commands can interfere with the connection state.
     let tag = if upper.starts_with("BEGIN") || upper.starts_with("START") {
         "BEGIN"
     } else if upper.starts_with("COMMIT") {
@@ -500,6 +492,7 @@ fn execute_transaction(conn: &Connection, sql: &str, upper: &str) -> QueryResult
         "ROLLBACK"
     };
 
+    debug!("Ignoring transaction command: {}", tag);
     Ok(QueryOutput::Command {
         tag: tag.to_string(),
     })
@@ -809,40 +802,35 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_rollback() {
+    fn test_transaction_commands_ignored() {
+        // Transaction commands are ignored for compatibility with PostgreSQL clients
+        // DuckDB runs in autocommit mode - each statement commits immediately
         let (_dir, db_path) = create_test_db();
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
-        conn.execute("BEGIN").unwrap();
+        // BEGIN returns success but doesn't start a transaction
+        let result = conn.execute("BEGIN").unwrap();
+        assert!(matches!(result, QueryOutput::Command { tag } if tag == "BEGIN"));
+
+        // Create a table - this auto-commits immediately
         conn.execute("CREATE TABLE test (id INTEGER)").unwrap();
+
+        // ROLLBACK returns success but doesn't actually rollback
         let result = conn.execute("ROLLBACK").unwrap();
         assert!(matches!(result, QueryOutput::Command { tag } if tag == "ROLLBACK"));
 
-        // Table should not exist after rollback
+        // Table still exists because we're in autocommit mode
         let result = conn.execute("SELECT * FROM test");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_auto_rollback_on_error() {
-        let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
-
-        // Start transaction
-        conn.execute("BEGIN").unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER)").unwrap();
-
-        // Force an error (syntax error)
-        let result = conn.execute("INVALID SQL SYNTAX HERE");
-        assert!(result.is_err());
-
-        // After auto-rollback, table shouldn't exist
-        let result = conn.execute("SELECT * FROM test");
-        assert!(result.is_err());
-
-        // Should be able to start a new transaction
-        let result = conn.execute("BEGIN");
         assert!(result.is_ok());
+
+        // COMMIT also returns success
+        let result = conn.execute("COMMIT").unwrap();
+        assert!(matches!(result, QueryOutput::Command { tag } if tag == "COMMIT"));
+
+        // Multiple BEGIN/COMMIT work fine (all ignored)
+        conn.execute("BEGIN").unwrap();
+        conn.execute("BEGIN").unwrap();
+        conn.execute("COMMIT").unwrap();
     }
 
     #[test]
