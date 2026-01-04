@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn test_create_connection() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
         assert!(db_path.exists());
         drop(conn);
     }
