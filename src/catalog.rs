@@ -398,7 +398,12 @@ fn handle_pg_settings_query(pg_version: &str) -> QueryOutput {
 
     let rows: Vec<Vec<Value>> = settings
         .iter()
-        .map(|(name, setting)| vec![Value::Text(name.to_string()), Value::Text(setting.to_string())])
+        .map(|(name, setting)| {
+            vec![
+                Value::Text(name.to_string()),
+                Value::Text(setting.to_string()),
+            ]
+        })
         .collect();
 
     QueryOutput::Rows {

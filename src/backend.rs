@@ -295,16 +295,12 @@ fn get_typed_value(row: &duckdb::Row, idx: usize) -> Value {
         }
         ValueRef::Float(f) => Value::Float32(f),
         ValueRef::Double(d) => Value::Float64(d),
-        ValueRef::Decimal(d) => {
-            Decimal::from_str(&d.to_string())
-                .map(Value::Decimal)
-                .unwrap_or_else(|_| Value::Text(d.to_string()))
-        }
-        ValueRef::Text(s) => {
-            String::from_utf8(s.to_vec())
-                .map(Value::Text)
-                .unwrap_or_else(|_| Value::Bytes(s.to_vec()))
-        }
+        ValueRef::Decimal(d) => Decimal::from_str(&d.to_string())
+            .map(Value::Decimal)
+            .unwrap_or_else(|_| Value::Text(d.to_string())),
+        ValueRef::Text(s) => String::from_utf8(s.to_vec())
+            .map(Value::Text)
+            .unwrap_or_else(|_| Value::Bytes(s.to_vec())),
         ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
         ValueRef::Date32(days) => {
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
@@ -321,7 +317,14 @@ fn get_typed_value(row: &duckdb::Row, idx: usize) -> Value {
             let micro_part = (micros % 1_000_000) as u32;
             NaiveTime::from_num_seconds_from_midnight_opt(secs, micro_part * 1000)
                 .map(Value::Time)
-                .unwrap_or_else(|| Value::Text(format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)))
+                .unwrap_or_else(|| {
+                    Value::Text(format!(
+                        "{:02}:{:02}:{:02}",
+                        secs / 3600,
+                        (secs % 3600) / 60,
+                        secs % 60
+                    ))
+                })
         }
         ValueRef::Timestamp(unit, ts) => {
             let micros = match unit {
@@ -336,9 +339,11 @@ fn get_typed_value(row: &duckdb::Row, idx: usize) -> Value {
                 .map(|dt| Value::Timestamp(dt.naive_utc()))
                 .unwrap_or_else(|| Value::Text("1970-01-01 00:00:00".to_string()))
         }
-        ValueRef::Interval { months, days, nanos } => {
-            Value::Text(format_interval(months, days, nanos))
-        }
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => Value::Text(format_interval(months, days, nanos)),
         ValueRef::Enum(enum_type, idx) => {
             use arrow::array::StringArray;
             let dict_values = match enum_type {
@@ -362,7 +367,9 @@ fn get_typed_value(row: &duckdb::Row, idx: usize) -> Value {
         }
         ValueRef::List(list_type, row_idx) => Value::Text(format_list(list_type, row_idx)),
         ValueRef::Map(map_array, row_idx) => Value::Text(format_map(map_array, row_idx)),
-        ValueRef::Struct(struct_array, row_idx) => Value::Text(format_struct(struct_array, row_idx)),
+        ValueRef::Struct(struct_array, row_idx) => {
+            Value::Text(format_struct(struct_array, row_idx))
+        }
         ValueRef::Array(array, row_idx) => Value::Text(format_fixed_list(array, row_idx)),
         ValueRef::Union(union_array, row_idx) => Value::Text(format_union(union_array, row_idx)),
     }
@@ -911,14 +918,14 @@ mod tests {
         let conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn
-            .execute("SELECT 42::INTEGER AS i, 3.14::DOUBLE AS d, 100::BIGINT AS b")
+            .execute("SELECT 42::INTEGER AS i, 3.25::DOUBLE AS d, 100::BIGINT AS b")
             .unwrap();
 
         match result {
             QueryOutput::Rows { rows, .. } => {
                 assert_eq!(rows[0][0], Value::Int32(42));
                 if let Value::Float64(d) = rows[0][1] {
-                    assert!((d - 3.14).abs() < 0.001);
+                    assert!((d - 3.25).abs() < 0.001);
                 } else {
                     panic!("Expected Float64");
                 }
@@ -936,7 +943,10 @@ mod tests {
         let result = conn.execute("SELECT DATE '2024-01-15' AS d").unwrap();
         match result {
             QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows[0][0], Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()));
+                assert_eq!(
+                    rows[0][0],
+                    Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap())
+                );
             }
             _ => panic!("Expected Rows output"),
         }

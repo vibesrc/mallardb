@@ -188,7 +188,8 @@ fn query_output_to_response(output: QueryOutput, format: &Format) -> PgWireResul
                 .collect();
 
             let header = Arc::new(field_infos);
-            let data_rows = encode_rows_per_column_format(rows, header.clone(), type_names, column_formats);
+            let data_rows =
+                encode_rows_per_column_format(rows, header.clone(), type_names, column_formats);
 
             Ok(vec![Response::Query(QueryResponse::new(header, data_rows))])
         }
@@ -217,7 +218,7 @@ fn query_output_to_response_text(output: QueryOutput) -> PgWireResult<Vec<Respon
 fn encode_rows_per_column_format(
     rows: Vec<Vec<Value>>,
     schema: Arc<Vec<FieldInfo>>,
-    _type_names: Vec<String>, // No longer needed - we have typed values
+    _type_names: Vec<String>,  // No longer needed - we have typed values
     column_formats: Vec<bool>, // true = binary, false = text
 ) -> impl Stream<Item = PgWireResult<DataRow>> {
     let mut results = Vec::new();
@@ -441,7 +442,10 @@ impl ExtendedQueryHandler for MallardbHandler {
             .unwrap_or(&self.config.postgres_user);
 
         let result = self.execute_query(&query, username)?;
-        debug!("Query result obtained, converting to response with format {:?}", portal.result_column_format);
+        debug!(
+            "Query result obtained, converting to response with format {:?}",
+            portal.result_column_format
+        );
         let responses = query_output_to_response(result, &portal.result_column_format)?;
         let response = responses
             .into_iter()
