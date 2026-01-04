@@ -36,20 +36,37 @@ pub enum StatementKind {
     Other,
 }
 
-/// Classify a SQL statement using the parser, with string fallback
-pub fn classify_statement(sql: &str) -> StatementKind {
-    let trimmed = sql.trim();
+/// Result of parsing SQL - contains classification and optionally the parsed statement
+pub struct ParsedSql {
+    pub kind: StatementKind,
+    pub statement: Option<Statement>,
+}
 
-    // Try parsing with sqlparser
+/// Parse and classify a SQL statement (single parse operation)
+pub fn parse_sql(sql: &str) -> ParsedSql {
+    let trimmed = sql.trim();
     let dialect = PostgreSqlDialect {};
-    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
-        && let Some(stmt) = statements.first()
+
+    if let Ok(mut statements) = Parser::parse_sql(&dialect, trimmed)
+        && let Some(stmt) = statements.pop()
     {
-        return classify_parsed_statement(stmt);
+        let kind = classify_parsed_statement(&stmt);
+        return ParsedSql {
+            kind,
+            statement: Some(stmt),
+        };
     }
 
     // Fallback to string-based classification
-    classify_statement_string(trimmed)
+    ParsedSql {
+        kind: classify_statement_string(trimmed),
+        statement: None,
+    }
+}
+
+/// Classify a SQL statement using the parser, with string fallback
+pub fn classify_statement(sql: &str) -> StatementKind {
+    parse_sql(sql).kind
 }
 
 /// Classify a parsed statement
@@ -122,6 +139,11 @@ pub fn returns_rows(sql: &str) -> bool {
     )
 }
 
+/// Check if a StatementKind returns rows
+pub fn kind_returns_rows(kind: StatementKind) -> bool {
+    matches!(kind, StatementKind::Select | StatementKind::Show)
+}
+
 /// Check if a statement is a SHOW command
 pub fn is_show_statement(sql: &str) -> bool {
     matches!(classify_statement(sql), StatementKind::Show)
@@ -161,8 +183,8 @@ pub fn contains_catalog_reference(sql: &str) -> bool {
 }
 
 /// Extract the variable name from a SET statement, if it is one
-pub fn get_set_variable(sql: &str) -> Option<String> {
-    if classify_statement(sql) != StatementKind::Set {
+pub fn get_set_variable_from_kind(sql: &str, kind: StatementKind) -> Option<String> {
+    if kind != StatementKind::Set {
         return None;
     }
     // Extract variable name from "SET var = value" or "SET var TO value"
@@ -173,13 +195,14 @@ pub fn get_set_variable(sql: &str) -> Option<String> {
         .map(|v| v.trim_end_matches('=').to_lowercase())
 }
 
-/// Get the transaction command tag (BEGIN, COMMIT, ROLLBACK, SAVEPOINT)
-pub fn get_transaction_tag(sql: &str) -> &'static str {
-    let trimmed = sql.trim();
-    let dialect = PostgreSqlDialect {};
-    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
-        && let Some(stmt) = statements.first()
-    {
+/// Extract the variable name from a SET statement (parses SQL)
+pub fn get_set_variable(sql: &str) -> Option<String> {
+    get_set_variable_from_kind(sql, classify_statement(sql))
+}
+
+/// Get transaction tag from parsed statement
+pub fn get_transaction_tag_from_parsed(parsed: &ParsedSql, sql: &str) -> &'static str {
+    if let Some(ref stmt) = parsed.statement {
         return match stmt {
             Statement::StartTransaction { .. } => "BEGIN",
             Statement::Commit { .. } => "COMMIT",
@@ -189,8 +212,7 @@ pub fn get_transaction_tag(sql: &str) -> &'static str {
         };
     }
     // Fallback: first word
-    trimmed
-        .split_whitespace()
+    sql.split_whitespace()
         .next()
         .map(|w| match w.to_uppercase().as_str() {
             "BEGIN" | "START" => "BEGIN",
@@ -202,22 +224,28 @@ pub fn get_transaction_tag(sql: &str) -> &'static str {
         .unwrap_or("UNKNOWN")
 }
 
-/// Extract the DDL command tag (CREATE TABLE, DROP VIEW, etc.)
-pub fn get_ddl_tag(sql: &str) -> String {
-    let trimmed = sql.trim();
-    let dialect = PostgreSqlDialect {};
-    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
-        && let Some(stmt) = statements.first()
-    {
+/// Get the transaction command tag (parses SQL)
+pub fn get_transaction_tag(sql: &str) -> &'static str {
+    get_transaction_tag_from_parsed(&parse_sql(sql), sql)
+}
+
+/// Get DDL tag from parsed statement
+pub fn get_ddl_tag_from_parsed(parsed: &ParsedSql, sql: &str) -> String {
+    if let Some(ref stmt) = parsed.statement {
         return ddl_tag_from_statement(stmt);
     }
     // Fallback: first two words
-    let words: Vec<&str> = trimmed.split_whitespace().take(2).collect();
+    let words: Vec<&str> = sql.split_whitespace().take(2).collect();
     match words.as_slice() {
         [cmd, obj] => format!("{} {}", cmd.to_uppercase(), obj.to_uppercase()),
         [cmd] => cmd.to_uppercase(),
         _ => "DDL".to_string(),
     }
+}
+
+/// Extract the DDL command tag (parses SQL)
+pub fn get_ddl_tag(sql: &str) -> String {
+    get_ddl_tag_from_parsed(&parse_sql(sql), sql)
 }
 
 fn ddl_tag_from_statement(stmt: &Statement) -> String {

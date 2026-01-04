@@ -14,7 +14,10 @@ use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::error::MallardbError;
-use crate::sql_rewriter::{classify_statement, get_ddl_tag, get_transaction_tag, returns_rows, StatementKind};
+use crate::sql_rewriter::{
+    get_ddl_tag_from_parsed, get_transaction_tag_from_parsed, kind_returns_rows, parse_sql,
+    StatementKind,
+};
 
 /// Result type for query execution
 pub type QueryResult = Result<QueryOutput, MallardbError>;
@@ -113,9 +116,10 @@ impl DuckDbConnection {
     /// For SELECT queries, wraps in LIMIT 0 subquery to get schema without actual execution
     pub fn describe(&self, sql: &str) -> Result<Vec<ColumnInfo>, MallardbError> {
         let trimmed = sql.trim().trim_end_matches(';');
+        let parsed = parse_sql(trimmed);
 
         // For SELECT-like queries, wrap in LIMIT 0 subquery to get schema
-        let describe_sql = if returns_rows(trimmed) {
+        let describe_sql = if kind_returns_rows(parsed.kind) {
             format!("SELECT * FROM ({}) AS _describe_subquery LIMIT 0", trimmed)
         } else {
             // For non-SELECT queries (DDL, DML), return empty - they don't return rows
@@ -153,15 +157,18 @@ fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
     debug!("Executing: {}", sql);
 
     let trimmed = sql.trim();
+    let parsed = parse_sql(trimmed);
 
-    // Classify statement using parser (with string fallback)
-    match classify_statement(trimmed) {
+    // Route based on statement kind (single parse)
+    match parsed.kind {
         StatementKind::Select | StatementKind::Show => execute_select(conn, sql),
         StatementKind::Insert => execute_dml(conn, sql, "INSERT"),
         StatementKind::Update => execute_dml(conn, sql, "UPDATE"),
         StatementKind::Delete => execute_dml(conn, sql, "DELETE"),
-        StatementKind::Ddl => execute_ddl(conn, sql, get_ddl_tag(trimmed)),
-        StatementKind::Transaction => execute_transaction(conn, sql, trimmed),
+        StatementKind::Ddl => execute_ddl(conn, sql, get_ddl_tag_from_parsed(&parsed, trimmed)),
+        StatementKind::Transaction => {
+            execute_transaction(conn, sql, get_transaction_tag_from_parsed(&parsed, trimmed))
+        }
         StatementKind::Set => execute_set(conn, sql),
         StatementKind::Copy | StatementKind::Other => execute_generic(conn, sql),
     }
@@ -504,11 +511,10 @@ fn execute_ddl(conn: &Connection, sql: &str, tag: String) -> QueryResult {
     Ok(QueryOutput::Command { tag })
 }
 
-fn execute_transaction(_conn: &Connection, _sql: &str, sql: &str) -> QueryResult {
+fn execute_transaction(_conn: &Connection, _sql: &str, tag: &'static str) -> QueryResult {
     // For PostgreSQL client compatibility, completely ignore transaction commands.
     // DuckDB works in autocommit mode - each statement commits immediately.
     // Calling actual transaction commands can interfere with the connection state.
-    let tag = get_transaction_tag(sql);
     debug!("Ignoring transaction command: {}", tag);
     Ok(QueryOutput::Command {
         tag: tag.to_string(),
