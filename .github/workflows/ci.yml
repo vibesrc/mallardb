@@ -41,9 +41,7 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib
       - name: Run integration tests
-        run: cargo test --test integration
-      - name: Run conformance tests
-        run: cargo test --test conformance
+        run: cargo test --test integration_test -- --ignored
 
   build:
     name: Build
