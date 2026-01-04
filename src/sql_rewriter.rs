@@ -127,6 +127,39 @@ pub fn is_show_statement(sql: &str) -> bool {
     matches!(classify_statement(sql), StatementKind::Show)
 }
 
+/// PostgreSQL catalog items that need emulation
+const PG_CATALOG_ITEMS: &[&str] = &[
+    // Functions
+    "current_database",
+    "current_schema",
+    "version",
+    "pg_backend_pid",
+    "has_table_privilege",
+    "has_schema_privilege",
+    "has_database_privilege",
+    "pg_get_userbyid",
+    "pg_encoding_to_char",
+    "obj_description",
+    "col_description",
+    "pg_get_partkeydef",
+    "shobj_description",
+    // Keywords
+    "current_user",
+    "session_user",
+    // Tables
+    "pg_roles",
+    "pg_user",
+    "pg_stat_activity",
+    "pg_settings",
+    "pg_database",
+];
+
+/// Check if SQL contains PostgreSQL catalog functions/tables that need emulation
+pub fn contains_catalog_reference(sql: &str) -> bool {
+    let lower = sql.to_lowercase();
+    PG_CATALOG_ITEMS.iter().any(|item| lower.contains(item))
+}
+
 /// Extract the variable name from a SET statement, if it is one
 pub fn get_set_variable(sql: &str) -> Option<String> {
     if classify_statement(sql) != StatementKind::Set {

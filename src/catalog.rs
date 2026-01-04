@@ -4,7 +4,7 @@
 //! translates them to DuckDB equivalents or synthesizes responses.
 
 use crate::backend::{ColumnInfo, QueryOutput, Value};
-use crate::sql_rewriter::{get_set_variable, is_show_statement};
+use crate::sql_rewriter::{contains_catalog_reference, get_set_variable, is_show_statement};
 
 // Re-export rewrite_sql from sql_rewriter module
 pub use crate::sql_rewriter::rewrite_sql;
@@ -53,39 +53,7 @@ pub fn handle_ignored_set() -> QueryOutput {
 /// NOTE: Many pg_catalog tables are handled natively by DuckDB - only intercept
 /// what requires PostgreSQL-specific emulation (auth, sessions, version info)
 pub fn is_catalog_query(sql: &str) -> bool {
-    // SHOW commands we must handle
-    if is_show_statement(sql) {
-        return true;
-    }
-
-    // Check for PostgreSQL-specific functions/tables (case-insensitive content check)
-    let lower = sql.to_lowercase();
-    // PostgreSQL-specific functions with no DuckDB equivalent
-    lower.contains("current_database()")
-        || lower.contains("current_schema()")
-        || lower.contains("version()")
-        || lower.contains("pg_backend_pid()")
-        // Auth-related (DuckDB has no auth system)
-        || lower.contains("current_user")
-        || lower.contains("session_user")
-        || lower.contains("pg_roles")
-        || lower.contains("pg_user")
-        || lower.contains("has_table_privilege")
-        || lower.contains("has_schema_privilege")
-        || lower.contains("has_database_privilege")
-        || lower.contains("pg_get_userbyid")
-        // Session/connection info (DuckDB doesn't track)
-        || lower.contains("pg_stat_activity")
-        || lower.contains("pg_settings")
-        // Database-level info (different concept in DuckDB)
-        || lower.contains("pg_database")
-        || lower.contains("pg_encoding_to_char")
-        // Description functions (table JOINs pass through to DuckDB)
-        || lower.contains("obj_description(")
-        || lower.contains("col_description(")
-        // PostgreSQL-specific functions DuckDB lacks
-        || lower.contains("pg_get_partkeydef(")
-        || lower.contains("shobj_description(")
+    is_show_statement(sql) || contains_catalog_reference(sql)
 }
 
 /// Handle a catalog query and return synthetic results
