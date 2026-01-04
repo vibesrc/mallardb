@@ -14,8 +14,10 @@ use tracing::warn;
 /// Classification of SQL statement types for query routing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatementKind {
-    /// SELECT, SHOW, DESCRIBE, EXPLAIN, WITH, TABLE, FROM - returns rows
+    /// SELECT, DESCRIBE, EXPLAIN, WITH, TABLE, FROM - returns rows
     Select,
+    /// SHOW commands - returns rows
+    Show,
     /// INSERT - returns affected row count
     Insert,
     /// UPDATE - returns affected row count
@@ -85,105 +87,57 @@ fn classify_parsed_statement(stmt: &Statement) -> StatementKind {
         | Statement::ShowFunctions { .. }
         | Statement::ShowVariable { .. }
         | Statement::ShowStatus { .. }
-        | Statement::ShowCreate { .. } => StatementKind::Select,
+        | Statement::ShowCreate { .. } => StatementKind::Show,
         _ => StatementKind::Other,
     }
 }
 
 /// String-based classification fallback for unparseable SQL
 fn classify_statement_string(sql: &str) -> StatementKind {
-    let upper = sql.to_uppercase();
-    let upper = upper.trim_start();
+    let first_word = sql
+        .split_whitespace()
+        .next()
+        .map(|w| w.to_uppercase())
+        .unwrap_or_default();
 
-    if upper.starts_with("SELECT")
-        || upper.starts_with("SHOW")
-        || upper.starts_with("DESCRIBE")
-        || upper.starts_with("EXPLAIN")
-        || upper.starts_with("WITH")
-        || upper.starts_with("TABLE")
-        || upper.starts_with("FROM")
-    {
-        StatementKind::Select
-    } else if upper.starts_with("INSERT") {
-        StatementKind::Insert
-    } else if upper.starts_with("UPDATE") {
-        StatementKind::Update
-    } else if upper.starts_with("DELETE") {
-        StatementKind::Delete
-    } else if upper.starts_with("CREATE")
-        || upper.starts_with("DROP")
-        || upper.starts_with("ALTER")
-        || upper.starts_with("TRUNCATE")
-    {
-        StatementKind::Ddl
-    } else if upper.starts_with("BEGIN")
-        || upper.starts_with("START TRANSACTION")
-        || upper.starts_with("COMMIT")
-        || upper.starts_with("ROLLBACK")
-        || upper.starts_with("SAVEPOINT")
-    {
-        StatementKind::Transaction
-    } else if upper.starts_with("SET") {
-        StatementKind::Set
-    } else if upper.starts_with("COPY") {
-        StatementKind::Copy
-    } else {
-        StatementKind::Other
+    match first_word.as_str() {
+        "SELECT" | "DESCRIBE" | "EXPLAIN" | "WITH" | "TABLE" | "FROM" => StatementKind::Select,
+        "SHOW" => StatementKind::Show,
+        "INSERT" => StatementKind::Insert,
+        "UPDATE" => StatementKind::Update,
+        "DELETE" => StatementKind::Delete,
+        "CREATE" | "DROP" | "ALTER" | "TRUNCATE" => StatementKind::Ddl,
+        "BEGIN" | "START" | "COMMIT" | "ROLLBACK" | "SAVEPOINT" => StatementKind::Transaction,
+        "SET" => StatementKind::Set,
+        "COPY" => StatementKind::Copy,
+        _ => StatementKind::Other,
     }
 }
 
-/// Check if a statement returns rows (is SELECT-like)
+/// Check if a statement returns rows (is SELECT-like or SHOW)
 pub fn returns_rows(sql: &str) -> bool {
-    matches!(classify_statement(sql), StatementKind::Select)
+    matches!(
+        classify_statement(sql),
+        StatementKind::Select | StatementKind::Show
+    )
 }
 
 /// Check if a statement is a SHOW command
 pub fn is_show_statement(sql: &str) -> bool {
-    let trimmed = sql.trim();
-    let dialect = PostgreSqlDialect {};
-    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
-        && let Some(stmt) = statements.first()
-    {
-        return matches!(
-            stmt,
-            Statement::ShowTables { .. }
-                | Statement::ShowColumns { .. }
-                | Statement::ShowFunctions { .. }
-                | Statement::ShowVariable { .. }
-                | Statement::ShowStatus { .. }
-                | Statement::ShowCreate { .. }
-        );
-    }
-    // Fallback
-    trimmed.to_uppercase().starts_with("SHOW")
+    matches!(classify_statement(sql), StatementKind::Show)
 }
 
 /// Extract the variable name from a SET statement, if it is one
 pub fn get_set_variable(sql: &str) -> Option<String> {
+    if classify_statement(sql) != StatementKind::Set {
+        return None;
+    }
+    // Extract variable name from "SET var = value" or "SET var TO value"
     let trimmed = sql.trim();
-    let dialect = PostgreSqlDialect {};
-    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
-        && let Some(Statement::Set(set_expr)) = statements.first()
-    {
-        // SetExpr contains the variable info - extract the variable name
-        let set_str = set_expr.to_string();
-        // Parse "SET var = value" or "SET var TO value" to extract var
-        let set_str = set_str.strip_prefix("SET ").unwrap_or(&set_str);
-        if let Some(var) = set_str.split_whitespace().next() {
-            return Some(var.to_lowercase());
-        }
-    }
-    // Fallback: string parsing
-    let upper = trimmed.to_uppercase();
-    if upper.starts_with("SET ") {
-        let rest = trimmed[4..].trim();
-        if let Some(var) = rest.split_whitespace().next() {
-            // Strip any = that might be attached
-            let var = var.trim_end_matches('=');
-            return Some(var.to_lowercase());
-        }
-    }
-    None
+    let rest = if trimmed.len() > 4 { &trimmed[4..] } else { "" };
+    rest.split_whitespace()
+        .next()
+        .map(|v| v.trim_end_matches('=').to_lowercase())
 }
 
 /// Get the transaction command tag (BEGIN, COMMIT, ROLLBACK, SAVEPOINT)
@@ -201,19 +155,18 @@ pub fn get_transaction_tag(sql: &str) -> &'static str {
             _ => "UNKNOWN",
         };
     }
-    // Fallback
-    let upper = trimmed.to_uppercase();
-    if upper.starts_with("BEGIN") || upper.starts_with("START") {
-        "BEGIN"
-    } else if upper.starts_with("COMMIT") {
-        "COMMIT"
-    } else if upper.starts_with("ROLLBACK") {
-        "ROLLBACK"
-    } else if upper.starts_with("SAVEPOINT") {
-        "SAVEPOINT"
-    } else {
-        "UNKNOWN"
-    }
+    // Fallback: first word
+    trimmed
+        .split_whitespace()
+        .next()
+        .map(|w| match w.to_uppercase().as_str() {
+            "BEGIN" | "START" => "BEGIN",
+            "COMMIT" => "COMMIT",
+            "ROLLBACK" => "ROLLBACK",
+            "SAVEPOINT" => "SAVEPOINT",
+            _ => "UNKNOWN",
+        })
+        .unwrap_or("UNKNOWN")
 }
 
 /// Extract the DDL command tag (CREATE TABLE, DROP VIEW, etc.)
@@ -223,37 +176,39 @@ pub fn get_ddl_tag(sql: &str) -> String {
     if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
         && let Some(stmt) = statements.first()
     {
-        return match stmt {
-            Statement::CreateTable { .. } => "CREATE TABLE".to_string(),
-            Statement::CreateIndex(_) => "CREATE INDEX".to_string(),
-            Statement::CreateView { .. } => "CREATE VIEW".to_string(),
-            Statement::CreateSchema { .. } => "CREATE SCHEMA".to_string(),
-            Statement::CreateDatabase { .. } => "CREATE DATABASE".to_string(),
-            Statement::CreateFunction { .. } => "CREATE FUNCTION".to_string(),
-            Statement::CreateExtension { .. } => "CREATE EXTENSION".to_string(),
-            Statement::CreateType { .. } => "CREATE TYPE".to_string(),
-            Statement::CreateRole { .. } => "CREATE ROLE".to_string(),
-            Statement::CreateSequence { .. } => "CREATE SEQUENCE".to_string(),
-            Statement::Drop { object_type, .. } => format!("DROP {}", object_type),
-            Statement::DropFunction { .. } => "DROP FUNCTION".to_string(),
-            Statement::AlterTable { .. } => "ALTER TABLE".to_string(),
-            Statement::AlterIndex { .. } => "ALTER INDEX".to_string(),
-            Statement::AlterView { .. } => "ALTER VIEW".to_string(),
-            Statement::AlterRole { .. } => "ALTER ROLE".to_string(),
-            Statement::Truncate { .. } => "TRUNCATE TABLE".to_string(),
-            _ => "DDL".to_string(),
-        };
+        return ddl_tag_from_statement(stmt);
     }
-    // Fallback: extract first 2-3 words
-    let upper = trimmed.to_uppercase();
-    let words: Vec<&str> = upper.split_whitespace().take(3).collect();
+    // Fallback: first two words
+    let words: Vec<&str> = trimmed.split_whitespace().take(2).collect();
     match words.as_slice() {
-        ["CREATE", obj, ..] => format!("CREATE {}", obj),
-        ["DROP", obj, ..] => format!("DROP {}", obj),
-        ["ALTER", obj, ..] => format!("ALTER {}", obj),
-        ["TRUNCATE", ..] => "TRUNCATE TABLE".to_string(),
+        [cmd, obj] => format!("{} {}", cmd.to_uppercase(), obj.to_uppercase()),
+        [cmd] => cmd.to_uppercase(),
         _ => "DDL".to_string(),
     }
+}
+
+fn ddl_tag_from_statement(stmt: &Statement) -> String {
+    match stmt {
+        Statement::CreateTable { .. } => "CREATE TABLE",
+        Statement::CreateIndex(_) => "CREATE INDEX",
+        Statement::CreateView { .. } => "CREATE VIEW",
+        Statement::CreateSchema { .. } => "CREATE SCHEMA",
+        Statement::CreateDatabase { .. } => "CREATE DATABASE",
+        Statement::CreateFunction { .. } => "CREATE FUNCTION",
+        Statement::CreateExtension { .. } => "CREATE EXTENSION",
+        Statement::CreateType { .. } => "CREATE TYPE",
+        Statement::CreateRole { .. } => "CREATE ROLE",
+        Statement::CreateSequence { .. } => "CREATE SEQUENCE",
+        Statement::Drop { object_type, .. } => return format!("DROP {}", object_type),
+        Statement::DropFunction { .. } => "DROP FUNCTION",
+        Statement::AlterTable { .. } => "ALTER TABLE",
+        Statement::AlterIndex { .. } => "ALTER INDEX",
+        Statement::AlterView { .. } => "ALTER VIEW",
+        Statement::AlterRole { .. } => "ALTER ROLE",
+        Statement::Truncate { .. } => "TRUNCATE TABLE",
+        _ => "DDL",
+    }
+    .to_string()
 }
 
 /// Rewrite SQL for DuckDB compatibility

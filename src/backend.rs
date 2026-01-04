@@ -156,7 +156,7 @@ fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
 
     // Classify statement using parser (with string fallback)
     match classify_statement(trimmed) {
-        StatementKind::Select => execute_select(conn, sql),
+        StatementKind::Select | StatementKind::Show => execute_select(conn, sql),
         StatementKind::Insert => execute_dml(conn, sql, "INSERT"),
         StatementKind::Update => execute_dml(conn, sql, "UPDATE"),
         StatementKind::Delete => execute_dml(conn, sql, "DELETE"),
