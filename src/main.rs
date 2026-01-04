@@ -80,7 +80,7 @@ async fn run_scripts(backend: &Backend, dir: &Path, description: &str) {
 
         // Execute the script - DuckDB handles multiple statements
         match backend.create_connection() {
-            Ok(conn) => {
+            Ok(mut conn) => {
                 if let Err(e) = conn.execute(&sql) {
                     error!("Failed to execute script {:?}: {}", script, e);
                 }

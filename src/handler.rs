@@ -17,19 +17,16 @@ use pgwire::api::results::{
     DataRowEncoder, DescribePortalResponse, DescribeStatementResponse, FieldFormat, FieldInfo,
     QueryResponse, Response, Tag,
 };
-use pgwire::api::stmt::{NoopQueryParser, StoredStatement};
+use pgwire::api::stmt::StoredStatement;
 use pgwire::api::{ClientInfo, PgWireServerHandlers};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 
 use crate::auth::MallardbAuthSource;
 use crate::backend::{Backend, DuckDbConnection, QueryOutput, Value};
-use crate::catalog::{
-    handle_catalog_query, handle_ignored_set, is_catalog_query, is_catalog_query_from_kind,
-    is_pg_ignored_set_from_kind, rewrite_sql,
-};
-use crate::sql_rewriter::parse_sql;
+use crate::catalog::{handle_catalog_query, handle_ignored_set};
 use crate::config::Config;
+use crate::query_parser::{MallardbQueryParser, MallardbStatement};
 use crate::types::duckdb_type_to_pgwire;
 
 /// The main handler for a single client connection
@@ -38,7 +35,7 @@ use crate::types::duckdb_type_to_pgwire;
 pub struct MallardbHandler {
     conn: Mutex<DuckDbConnection>,
     config: Arc<Config>,
-    query_parser: Arc<NoopQueryParser>,
+    query_parser: Arc<MallardbQueryParser>,
 }
 
 impl MallardbHandler {
@@ -56,30 +53,30 @@ impl MallardbHandler {
 
         Ok(MallardbHandler {
             conn: Mutex::new(conn),
-            config,
-            query_parser: Arc::new(NoopQueryParser::new()),
+            config: config.clone(),
+            query_parser: Arc::new(MallardbQueryParser::new(config)),
         })
     }
 
     /// Execute a query using the persistent connection
-    fn execute_query(&self, sql: &str, username: &str) -> PgWireResult<QueryOutput> {
-        // Strip any nul bytes from the SQL (can come from binary protocol)
-        let sql = &sql.replace('\0', "");
-        debug!("Executing query: {}", sql);
-
-        // Parse once for all checks
-        let parsed = parse_sql(sql);
+    /// Takes a pre-parsed MallardbStatement to avoid redundant parsing
+    fn execute_statement(
+        &self,
+        stmt: &MallardbStatement,
+        username: &str,
+    ) -> PgWireResult<QueryOutput> {
+        debug!("Executing query: {}", stmt.sql);
 
         // Handle PostgreSQL-specific SET commands that DuckDB doesn't support
-        if is_pg_ignored_set_from_kind(sql, parsed.kind) {
+        if stmt.is_pg_ignored_set {
             debug!("Ignoring PostgreSQL-specific SET command");
             return Ok(handle_ignored_set());
         }
 
         // Check for catalog queries first
-        if is_catalog_query_from_kind(sql, parsed.kind)
+        if stmt.is_catalog_query
             && let Some(result) = handle_catalog_query(
-                sql,
+                &stmt.sql,
                 &self.config.postgres_db,
                 username,
                 &self.config.pg_version,
@@ -89,12 +86,10 @@ impl MallardbHandler {
         }
         // pg_namespace falls through to DuckDB's built-in pg_catalog.pg_namespace
 
-        // Rewrite SQL for DuckDB compatibility (e.g., 'public' -> 'main', catalog -> 'data')
-        let sql = rewrite_sql(sql, &self.config.postgres_db);
-        debug!("Rewritten SQL: {}", sql);
+        debug!("Rewritten SQL: {}", stmt.rewritten_sql);
 
         // Execute on the persistent connection (lock for thread safety)
-        let conn = self.conn.lock().map_err(|_| {
+        let mut conn = self.conn.lock().map_err(|_| {
             PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_string(),
                 "XX000".to_string(),
@@ -102,7 +97,7 @@ impl MallardbHandler {
             )))
         })?;
 
-        conn.execute(&sql)
+        conn.execute(&stmt.rewritten_sql)
             .map_err(|e| PgWireError::UserError(Box::new(ErrorInfo::from(e))))
     }
 }
@@ -410,15 +405,18 @@ impl SimpleQueryHandler for MallardbHandler {
             .map(|s| s.as_str())
             .unwrap_or(&self.config.postgres_user);
 
-        let result = self.execute_query(query, username)?;
+        // Parse and execute - simple queries don't go through QueryParser
+        let sql = query.replace('\0', "");
+        let stmt = MallardbStatement::new(&sql, &self.config);
+        let result = self.execute_statement(&stmt, username)?;
         query_output_to_response_text(result)
     }
 }
 
 #[async_trait]
 impl ExtendedQueryHandler for MallardbHandler {
-    type Statement = String;
-    type QueryParser = NoopQueryParser;
+    type Statement = MallardbStatement;
+    type QueryParser = MallardbQueryParser;
 
     fn query_parser(&self) -> Arc<Self::QueryParser> {
         self.query_parser.clone()
@@ -433,10 +431,10 @@ impl ExtendedQueryHandler for MallardbHandler {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        let query = &portal.statement.statement;
+        let stmt = &portal.statement.statement;
 
         // Substitute parameters into the query
-        let query = substitute_parameters(query, &portal.parameters, &portal.parameter_format);
+        let query = substitute_parameters(&stmt.sql, &portal.parameters, &portal.parameter_format);
         debug!("Extended query: {}", query);
 
         // Get username from client metadata
@@ -446,7 +444,9 @@ impl ExtendedQueryHandler for MallardbHandler {
             .map(|s| s.as_str())
             .unwrap_or(&self.config.postgres_user);
 
-        let result = self.execute_query(&query, username)?;
+        // Re-create statement with substituted parameters for execution
+        let stmt = MallardbStatement::new(&query, &self.config);
+        let result = self.execute_statement(&stmt, username)?;
         debug!(
             "Query result obtained, converting to response with format {:?}",
             portal.result_column_format
@@ -468,33 +468,32 @@ impl ExtendedQueryHandler for MallardbHandler {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        let query = &stmt.statement;
-        debug!("Describe statement: {}", query);
+        let parsed = &stmt.statement;
+        debug!("Describe statement: {}", parsed.sql);
 
-        // Check for catalog queries first
-        if is_catalog_query(query) {
-            // pg_namespace falls through to DuckDB's built-in pg_catalog.pg_namespace
-
-            if let Some(result) = handle_catalog_query(
-                query,
+        // Check for catalog queries first using pre-parsed flag
+        if parsed.is_catalog_query
+            && let Some(result) = handle_catalog_query(
+                &parsed.sql,
                 &self.config.postgres_db,
                 &self.config.postgres_user,
                 &self.config.pg_version,
-            ) && let QueryOutput::Rows { columns, .. } = result
-            {
-                let field_infos: Vec<FieldInfo> = columns
-                    .iter()
-                    .map(|col| {
-                        let pg_type = duckdb_type_to_pgwire(&col.type_name);
-                        FieldInfo::new(col.name.clone(), None, None, pg_type, FieldFormat::Text)
-                    })
-                    .collect();
-                return Ok(DescribeStatementResponse::new(vec![], field_infos));
-            }
+            )
+            && let QueryOutput::Rows { columns, .. } = result
+        {
+            // pg_namespace falls through to DuckDB's built-in pg_catalog.pg_namespace
+            let field_infos: Vec<FieldInfo> = columns
+                .iter()
+                .map(|col| {
+                    let pg_type = duckdb_type_to_pgwire(&col.type_name);
+                    FieldInfo::new(col.name.clone(), None, None, pg_type, FieldFormat::Text)
+                })
+                .collect();
+            return Ok(DescribeStatementResponse::new(vec![], field_infos));
         }
 
-        // Rewrite SQL for DuckDB compatibility
-        let sql = rewrite_sql(query, &self.config.postgres_db);
+        // Use pre-rewritten SQL
+        let sql = &parsed.rewritten_sql;
 
         // Describe the query to get schema
         let conn = self.conn.lock().map_err(|_| {
@@ -505,7 +504,7 @@ impl ExtendedQueryHandler for MallardbHandler {
             )))
         })?;
 
-        match conn.describe(&sql) {
+        match conn.describe(sql) {
             Ok(columns) => {
                 let field_infos: Vec<FieldInfo> = columns
                     .iter()
@@ -532,11 +531,14 @@ impl ExtendedQueryHandler for MallardbHandler {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        let query = &portal.statement.statement;
+        let stmt = &portal.statement.statement;
 
         // Substitute parameters so we can describe the actual query
-        let query = substitute_parameters(query, &portal.parameters, &portal.parameter_format);
+        let query = substitute_parameters(&stmt.sql, &portal.parameters, &portal.parameter_format);
         debug!("Describe portal: {}", query);
+
+        // Re-create statement with substituted parameters
+        let stmt = MallardbStatement::new(&query, &self.config);
 
         // Get username from client metadata
         let username = client
@@ -545,10 +547,10 @@ impl ExtendedQueryHandler for MallardbHandler {
             .map(|s| s.as_str())
             .unwrap_or(&self.config.postgres_user);
 
-        // Check for catalog queries first - return their schema
-        if is_catalog_query(&query)
+        // Check for catalog queries first using pre-parsed flag - return their schema
+        if stmt.is_catalog_query
             && let Some(result) = handle_catalog_query(
-                &query,
+                &stmt.sql,
                 &self.config.postgres_db,
                 username,
                 &self.config.pg_version,
@@ -565,8 +567,8 @@ impl ExtendedQueryHandler for MallardbHandler {
             return Ok(DescribePortalResponse::new(field_infos));
         }
 
-        // Rewrite SQL for DuckDB compatibility
-        let sql = rewrite_sql(&query, &self.config.postgres_db);
+        // Use pre-rewritten SQL
+        let sql = &stmt.rewritten_sql;
 
         // Describe the query to get schema
         let conn = self.conn.lock().map_err(|_| {
@@ -577,7 +579,7 @@ impl ExtendedQueryHandler for MallardbHandler {
             )))
         })?;
 
-        match conn.describe(&sql) {
+        match conn.describe(sql) {
             Ok(columns) => {
                 let field_infos: Vec<FieldInfo> = columns
                     .iter()

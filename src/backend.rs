@@ -15,8 +15,8 @@ use tracing::{debug, info};
 use crate::config::Config;
 use crate::error::MallardbError;
 use crate::sql_rewriter::{
-    get_ddl_tag_from_parsed, get_transaction_tag_from_parsed, kind_returns_rows, parse_sql,
-    StatementKind,
+    StatementKind, get_ddl_tag_from_parsed, get_transaction_tag_from_parsed, kind_returns_rows,
+    parse_sql,
 };
 
 /// Result type for query execution
@@ -78,6 +78,8 @@ pub struct ColumnInfo {
 /// A DuckDB connection for a client session
 pub struct DuckDbConnection {
     conn: Connection,
+    /// Whether we're currently in an explicit transaction
+    in_transaction: bool,
 }
 
 impl DuckDbConnection {
@@ -91,7 +93,10 @@ impl DuckDbConnection {
         }
 
         let conn = Connection::open(db_path).map_err(MallardbError::from_duckdb)?;
-        Ok(DuckDbConnection { conn })
+        Ok(DuckDbConnection {
+            conn,
+            in_transaction: false,
+        })
     }
 
     /// Create a new read-only connection
@@ -104,12 +109,24 @@ impl DuckDbConnection {
         )
         .map_err(MallardbError::from_duckdb)?;
 
-        Ok(DuckDbConnection { conn })
+        Ok(DuckDbConnection {
+            conn,
+            in_transaction: false,
+        })
     }
 
     /// Execute a query
-    pub fn execute(&self, sql: &str) -> QueryResult {
-        execute_query(&self.conn, sql)
+    pub fn execute(&mut self, sql: &str) -> QueryResult {
+        let result = execute_query(&self.conn, sql, &mut self.in_transaction);
+
+        // Auto-rollback on error if in transaction (prevents stuck transaction state)
+        if result.is_err() && self.in_transaction {
+            debug!("Auto-rolling back transaction due to error");
+            let _ = self.conn.execute("ROLLBACK", []);
+            self.in_transaction = false;
+        }
+
+        result
     }
 
     /// Describe a query to get its column schema without returning data
@@ -153,7 +170,7 @@ impl DuckDbConnection {
 }
 
 /// Execute a query and return the result
-fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
+fn execute_query(conn: &Connection, sql: &str, in_transaction: &mut bool) -> QueryResult {
     debug!("Executing: {}", sql);
 
     let trimmed = sql.trim();
@@ -166,9 +183,11 @@ fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
         StatementKind::Update => execute_dml(conn, sql, "UPDATE"),
         StatementKind::Delete => execute_dml(conn, sql, "DELETE"),
         StatementKind::Ddl => execute_ddl(conn, sql, get_ddl_tag_from_parsed(&parsed, trimmed)),
-        StatementKind::Transaction => {
-            execute_transaction(conn, sql, get_transaction_tag_from_parsed(&parsed, trimmed))
-        }
+        StatementKind::Transaction => execute_transaction(
+            conn,
+            get_transaction_tag_from_parsed(&parsed, trimmed),
+            in_transaction,
+        ),
         StatementKind::Set => execute_set(conn, sql),
         StatementKind::Copy | StatementKind::Other => execute_generic(conn, sql),
     }
@@ -511,11 +530,50 @@ fn execute_ddl(conn: &Connection, sql: &str, tag: String) -> QueryResult {
     Ok(QueryOutput::Command { tag })
 }
 
-fn execute_transaction(_conn: &Connection, _sql: &str, tag: &'static str) -> QueryResult {
-    // For PostgreSQL client compatibility, completely ignore transaction commands.
-    // DuckDB works in autocommit mode - each statement commits immediately.
-    // Calling actual transaction commands can interfere with the connection state.
-    debug!("Ignoring transaction command: {}", tag);
+fn execute_transaction(
+    conn: &Connection,
+    tag: &'static str,
+    in_transaction: &mut bool,
+) -> QueryResult {
+    match tag {
+        "BEGIN" => {
+            if *in_transaction {
+                // Already in transaction - no-op (like PostgreSQL, just warns)
+                debug!("BEGIN ignored: already in transaction");
+            } else {
+                conn.execute("BEGIN", [])
+                    .map_err(MallardbError::from_duckdb)?;
+                *in_transaction = true;
+                debug!("Transaction started");
+            }
+        }
+        "COMMIT" => {
+            if *in_transaction {
+                conn.execute("COMMIT", [])
+                    .map_err(MallardbError::from_duckdb)?;
+                *in_transaction = false;
+                debug!("Transaction committed");
+            } else {
+                // Not in transaction - no-op
+                debug!("COMMIT ignored: not in transaction");
+            }
+        }
+        "ROLLBACK" => {
+            if *in_transaction {
+                conn.execute("ROLLBACK", [])
+                    .map_err(MallardbError::from_duckdb)?;
+                *in_transaction = false;
+                debug!("Transaction rolled back");
+            } else {
+                // Not in transaction - no-op
+                debug!("ROLLBACK ignored: not in transaction");
+            }
+        }
+        _ => {
+            // SAVEPOINT etc - pass through
+            debug!("Passing through transaction command: {}", tag);
+        }
+    }
     Ok(QueryOutput::Command {
         tag: tag.to_string(),
     })
@@ -638,7 +696,10 @@ impl Backend {
             .base_conn
             .try_clone()
             .map_err(MallardbError::from_duckdb)?;
-        Ok(DuckDbConnection { conn })
+        Ok(DuckDbConnection {
+            conn,
+            in_transaction: false,
+        })
     }
 
     /// Create a new read-only connection for a client
@@ -677,11 +738,11 @@ mod tests {
         let (_dir, db_path) = create_test_db();
         // First create DB with a writable connection
         {
-            let conn = DuckDbConnection::new(&db_path).unwrap();
+            let mut conn = DuckDbConnection::new(&db_path).unwrap();
             conn.execute("CREATE TABLE test (id INTEGER)").unwrap();
         }
         // Now open read-only
-        let conn = DuckDbConnection::new_readonly(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new_readonly(&db_path).unwrap();
         let result = conn.execute("SELECT * FROM test");
         assert!(result.is_ok());
     }
@@ -689,7 +750,7 @@ mod tests {
     #[test]
     fn test_execute_select() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("SELECT 1 AS num, 'hello' AS msg").unwrap();
         match result {
@@ -708,7 +769,7 @@ mod tests {
     #[test]
     fn test_execute_create_table() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn
             .execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
@@ -724,7 +785,7 @@ mod tests {
     #[test]
     fn test_execute_insert() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
             .unwrap();
@@ -747,7 +808,7 @@ mod tests {
     #[test]
     fn test_execute_update() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
             .unwrap();
@@ -772,7 +833,7 @@ mod tests {
     #[test]
     fn test_execute_delete() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)")
             .unwrap();
@@ -795,7 +856,7 @@ mod tests {
     #[test]
     fn test_execute_transaction() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("BEGIN").unwrap();
         assert!(matches!(result, QueryOutput::Command { tag } if tag == "BEGIN"));
@@ -807,41 +868,46 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_commands_ignored() {
-        // Transaction commands are ignored for compatibility with PostgreSQL clients
-        // DuckDB runs in autocommit mode - each statement commits immediately
+    fn test_transaction_rollback() {
+        // Transactions now actually work - ROLLBACK undoes changes
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
-        // BEGIN returns success but doesn't start a transaction
+        // BEGIN starts a transaction
         let result = conn.execute("BEGIN").unwrap();
         assert!(matches!(result, QueryOutput::Command { tag } if tag == "BEGIN"));
 
-        // Create a table - this auto-commits immediately
+        // Create a table within transaction
         conn.execute("CREATE TABLE test (id INTEGER)").unwrap();
 
-        // ROLLBACK returns success but doesn't actually rollback
+        // ROLLBACK actually rolls back
         let result = conn.execute("ROLLBACK").unwrap();
         assert!(matches!(result, QueryOutput::Command { tag } if tag == "ROLLBACK"));
 
-        // Table still exists because we're in autocommit mode
+        // Table does NOT exist - rollback worked
         let result = conn.execute("SELECT * FROM test");
-        assert!(result.is_ok());
+        assert!(result.is_err());
+    }
 
-        // COMMIT also returns success
-        let result = conn.execute("COMMIT").unwrap();
-        assert!(matches!(result, QueryOutput::Command { tag } if tag == "COMMIT"));
+    #[test]
+    fn test_nested_begin_tolerated() {
+        // Multiple BEGINs don't error (like PostgreSQL, just no-op if already in transaction)
+        let (_dir, db_path) = create_test_db();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
-        // Multiple BEGIN/COMMIT work fine (all ignored)
         conn.execute("BEGIN").unwrap();
-        conn.execute("BEGIN").unwrap();
+        conn.execute("BEGIN").unwrap(); // Should not error
         conn.execute("COMMIT").unwrap();
+
+        // COMMIT/ROLLBACK outside transaction is also tolerated
+        conn.execute("COMMIT").unwrap();
+        conn.execute("ROLLBACK").unwrap();
     }
 
     #[test]
     fn test_null_values() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("SELECT NULL AS null_val").unwrap();
         match result {
@@ -855,7 +921,7 @@ mod tests {
     #[test]
     fn test_boolean_values() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("SELECT true AS t, false AS f").unwrap();
         match result {
@@ -870,7 +936,7 @@ mod tests {
     #[test]
     fn test_numeric_types() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn
             .execute("SELECT 42::INTEGER AS i, 3.25::DOUBLE AS d, 100::BIGINT AS b")
@@ -893,7 +959,7 @@ mod tests {
     #[test]
     fn test_date_time_types() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("SELECT DATE '2024-01-15' AS d").unwrap();
         match result {
@@ -961,7 +1027,7 @@ mod tests {
         });
 
         let backend = Backend::new(config);
-        let conn = backend.create_connection().unwrap();
+        let mut conn = backend.create_connection().unwrap();
 
         // Test that the connection works
         let result = conn.execute("SELECT 1").unwrap();
@@ -996,12 +1062,12 @@ mod tests {
 
         // Create DB first with a writable connection
         {
-            let conn = backend.create_connection().unwrap();
+            let mut conn = backend.create_connection().unwrap();
             conn.execute("CREATE TABLE test (id INTEGER)").unwrap();
         }
 
         // Now create readonly connection
-        let conn = backend.create_readonly_connection().unwrap();
+        let mut conn = backend.create_readonly_connection().unwrap();
         let result = conn.execute("SELECT * FROM test").unwrap();
         assert!(matches!(result, QueryOutput::Rows { .. }));
 
@@ -1013,7 +1079,7 @@ mod tests {
     #[test]
     fn test_set_statement() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("SET threads = 4").unwrap();
         assert!(matches!(result, QueryOutput::Command { tag } if tag == "SET"));
@@ -1022,7 +1088,7 @@ mod tests {
     #[test]
     fn test_show_statement() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("SHOW TABLES").unwrap();
         assert!(matches!(result, QueryOutput::Rows { .. }));
@@ -1031,7 +1097,7 @@ mod tests {
     #[test]
     fn test_explain_statement() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn.execute("EXPLAIN SELECT 1").unwrap();
         assert!(matches!(result, QueryOutput::Rows { .. }));
@@ -1040,7 +1106,7 @@ mod tests {
     #[test]
     fn test_with_statement() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn
             .execute("WITH cte AS (SELECT 1 AS num) SELECT * FROM cte")
@@ -1056,7 +1122,7 @@ mod tests {
     #[test]
     fn test_column_info() {
         let (_dir, db_path) = create_test_db();
-        let conn = DuckDbConnection::new(&db_path).unwrap();
+        let mut conn = DuckDbConnection::new(&db_path).unwrap();
 
         let result = conn
             .execute("SELECT 1 AS first, 2 AS second, 3 AS third")

@@ -5,7 +5,7 @@
 
 use crate::backend::{ColumnInfo, QueryOutput, Value};
 use crate::sql_rewriter::{
-    contains_catalog_reference, get_set_variable_from_kind, is_show_statement, StatementKind,
+    StatementKind, contains_catalog_reference, get_set_variable_from_kind, is_show_statement,
 };
 
 // Re-export rewrite_sql from sql_rewriter module
