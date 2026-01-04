@@ -11,6 +11,132 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use tracing::warn;
 
+/// Classification of SQL statement types for query routing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatementKind {
+    /// SELECT, SHOW, DESCRIBE, EXPLAIN, WITH, TABLE, FROM - returns rows
+    Select,
+    /// INSERT - returns affected row count
+    Insert,
+    /// UPDATE - returns affected row count
+    Update,
+    /// DELETE - returns affected row count
+    Delete,
+    /// CREATE, DROP, ALTER - DDL commands
+    Ddl,
+    /// BEGIN, START TRANSACTION, COMMIT, ROLLBACK
+    Transaction,
+    /// SET statements
+    Set,
+    /// COPY statements
+    Copy,
+    /// Unknown or unsupported statement type
+    Other,
+}
+
+/// Classify a SQL statement using the parser, with string fallback
+pub fn classify_statement(sql: &str) -> StatementKind {
+    let trimmed = sql.trim();
+
+    // Try parsing with sqlparser
+    let dialect = PostgreSqlDialect {};
+    if let Ok(statements) = Parser::parse_sql(&dialect, trimmed)
+        && let Some(stmt) = statements.first()
+    {
+        return classify_parsed_statement(stmt);
+    }
+
+    // Fallback to string-based classification
+    classify_statement_string(trimmed)
+}
+
+/// Classify a parsed statement
+fn classify_parsed_statement(stmt: &Statement) -> StatementKind {
+    match stmt {
+        Statement::Query(_) => StatementKind::Select,
+        Statement::Insert(_) => StatementKind::Insert,
+        Statement::Update { .. } => StatementKind::Update,
+        Statement::Delete(_) => StatementKind::Delete,
+        Statement::CreateTable { .. }
+        | Statement::CreateIndex(_)
+        | Statement::CreateView { .. }
+        | Statement::CreateSchema { .. }
+        | Statement::CreateDatabase { .. }
+        | Statement::CreateFunction { .. }
+        | Statement::CreateExtension { .. }
+        | Statement::CreateType { .. }
+        | Statement::CreateRole { .. }
+        | Statement::Drop { .. }
+        | Statement::DropFunction { .. }
+        | Statement::AlterTable { .. }
+        | Statement::AlterIndex { .. }
+        | Statement::AlterView { .. }
+        | Statement::AlterRole { .. }
+        | Statement::Truncate { .. } => StatementKind::Ddl,
+        Statement::StartTransaction { .. }
+        | Statement::Commit { .. }
+        | Statement::Rollback { .. }
+        | Statement::Savepoint { .. } => StatementKind::Transaction,
+        Statement::Set(_) => StatementKind::Set,
+        Statement::Copy { .. } => StatementKind::Copy,
+        Statement::ExplainTable { .. } | Statement::Explain { .. } => StatementKind::Select,
+        Statement::ShowTables { .. }
+        | Statement::ShowColumns { .. }
+        | Statement::ShowFunctions { .. }
+        | Statement::ShowVariable { .. }
+        | Statement::ShowStatus { .. }
+        | Statement::ShowCreate { .. } => StatementKind::Select,
+        _ => StatementKind::Other,
+    }
+}
+
+/// String-based classification fallback for unparseable SQL
+fn classify_statement_string(sql: &str) -> StatementKind {
+    let upper = sql.to_uppercase();
+    let upper = upper.trim_start();
+
+    if upper.starts_with("SELECT")
+        || upper.starts_with("SHOW")
+        || upper.starts_with("DESCRIBE")
+        || upper.starts_with("EXPLAIN")
+        || upper.starts_with("WITH")
+        || upper.starts_with("TABLE")
+        || upper.starts_with("FROM")
+    {
+        StatementKind::Select
+    } else if upper.starts_with("INSERT") {
+        StatementKind::Insert
+    } else if upper.starts_with("UPDATE") {
+        StatementKind::Update
+    } else if upper.starts_with("DELETE") {
+        StatementKind::Delete
+    } else if upper.starts_with("CREATE")
+        || upper.starts_with("DROP")
+        || upper.starts_with("ALTER")
+        || upper.starts_with("TRUNCATE")
+    {
+        StatementKind::Ddl
+    } else if upper.starts_with("BEGIN")
+        || upper.starts_with("START TRANSACTION")
+        || upper.starts_with("COMMIT")
+        || upper.starts_with("ROLLBACK")
+        || upper.starts_with("SAVEPOINT")
+    {
+        StatementKind::Transaction
+    } else if upper.starts_with("SET") {
+        StatementKind::Set
+    } else if upper.starts_with("COPY") {
+        StatementKind::Copy
+    } else {
+        StatementKind::Other
+    }
+}
+
+/// Check if a statement returns rows (is SELECT-like)
+pub fn returns_rows(sql: &str) -> bool {
+    matches!(classify_statement(sql), StatementKind::Select)
+}
+
 /// Rewrite SQL for DuckDB compatibility
 /// Falls back to minimal string-based rewriting if parsing fails
 pub fn rewrite_sql(sql: &str, database: &str) -> String {

@@ -14,6 +14,7 @@ use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::error::MallardbError;
+use crate::sql_rewriter::{classify_statement, returns_rows, StatementKind};
 
 /// Result type for query execution
 pub type QueryResult = Result<QueryOutput, MallardbError>;
@@ -112,15 +113,9 @@ impl DuckDbConnection {
     /// For SELECT queries, wraps in LIMIT 0 subquery to get schema without actual execution
     pub fn describe(&self, sql: &str) -> Result<Vec<ColumnInfo>, MallardbError> {
         let trimmed = sql.trim().trim_end_matches(';');
-        let upper = trimmed.to_uppercase();
 
         // For SELECT-like queries, wrap in LIMIT 0 subquery to get schema
-        let describe_sql = if upper.starts_with("SELECT")
-            || upper.starts_with("SHOW")
-            || upper.starts_with("WITH")
-            || upper.starts_with("TABLE")
-            || upper.starts_with("FROM")
-        {
+        let describe_sql = if returns_rows(trimmed) {
             format!("SELECT * FROM ({}) AS _describe_subquery LIMIT 0", trimmed)
         } else {
             // For non-SELECT queries (DDL, DML), return empty - they don't return rows
@@ -158,38 +153,17 @@ fn execute_query(conn: &Connection, sql: &str) -> QueryResult {
     debug!("Executing: {}", sql);
 
     let trimmed = sql.trim();
-    let upper = trimmed.to_uppercase();
 
-    // Determine query type
-    if upper.starts_with("SELECT")
-        || upper.starts_with("SHOW")
-        || upper.starts_with("DESCRIBE")
-        || upper.starts_with("EXPLAIN")
-        || upper.starts_with("WITH")
-        || upper.starts_with("TABLE")
-        || upper.starts_with("FROM")
-    {
-        execute_select(conn, sql)
-    } else if upper.starts_with("INSERT") {
-        execute_dml(conn, sql, "INSERT")
-    } else if upper.starts_with("UPDATE") {
-        execute_dml(conn, sql, "UPDATE")
-    } else if upper.starts_with("DELETE") {
-        execute_dml(conn, sql, "DELETE")
-    } else if upper.starts_with("CREATE") || upper.starts_with("DROP") || upper.starts_with("ALTER")
-    {
-        execute_ddl(conn, sql, extract_ddl_tag(&upper))
-    } else if upper.starts_with("BEGIN")
-        || upper.starts_with("START TRANSACTION")
-        || upper.starts_with("COMMIT")
-        || upper.starts_with("ROLLBACK")
-    {
-        execute_transaction(conn, sql, &upper)
-    } else if upper.starts_with("SET") {
-        execute_set(conn, sql)
-    } else {
-        // Try as a generic statement
-        execute_generic(conn, sql)
+    // Classify statement using parser (with string fallback)
+    match classify_statement(trimmed) {
+        StatementKind::Select => execute_select(conn, sql),
+        StatementKind::Insert => execute_dml(conn, sql, "INSERT"),
+        StatementKind::Update => execute_dml(conn, sql, "UPDATE"),
+        StatementKind::Delete => execute_dml(conn, sql, "DELETE"),
+        StatementKind::Ddl => execute_ddl(conn, sql, extract_ddl_tag(trimmed)),
+        StatementKind::Transaction => execute_transaction(conn, sql, trimmed),
+        StatementKind::Set => execute_set(conn, sql),
+        StatementKind::Copy | StatementKind::Other => execute_generic(conn, sql),
     }
 }
 
@@ -530,10 +504,11 @@ fn execute_ddl(conn: &Connection, sql: &str, tag: String) -> QueryResult {
     Ok(QueryOutput::Command { tag })
 }
 
-fn execute_transaction(_conn: &Connection, _sql: &str, upper: &str) -> QueryResult {
+fn execute_transaction(_conn: &Connection, _sql: &str, sql: &str) -> QueryResult {
     // For PostgreSQL client compatibility, completely ignore transaction commands.
     // DuckDB works in autocommit mode - each statement commits immediately.
     // Calling actual transaction commands can interfere with the connection state.
+    let upper = sql.to_uppercase();
     let tag = if upper.starts_with("BEGIN") || upper.starts_with("START") {
         "BEGIN"
     } else if upper.starts_with("COMMIT") {
@@ -572,7 +547,8 @@ fn execute_generic(conn: &Connection, sql: &str) -> QueryResult {
     }
 }
 
-fn extract_ddl_tag(upper: &str) -> String {
+fn extract_ddl_tag(sql: &str) -> String {
+    let upper = sql.to_uppercase();
     let words: Vec<&str> = upper.split_whitespace().take(3).collect();
     match words.as_slice() {
         ["CREATE", "TABLE", ..] => "CREATE TABLE".to_string(),
