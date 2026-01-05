@@ -16,6 +16,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    container: rust:1-slim-bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -35,8 +36,6 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
-
-      - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
