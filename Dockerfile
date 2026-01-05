@@ -1,5 +1,5 @@
 # Development build
-FROM rust:1-slim-bookworm AS builder
+FROM rust:latest AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -12,7 +12,7 @@ COPY src ./src
 RUN cargo build --release
 
 # Runtime image
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \

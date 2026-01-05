@@ -1,7 +1,7 @@
 # Minimal release image using pre-built binaries
 # Used by CI - binaries are built separately, no compilation here
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
