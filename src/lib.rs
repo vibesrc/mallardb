@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod config;
 pub mod error;
 pub mod handler;
+pub mod jobs;
 pub mod query_parser;
 pub mod sql_rewriter;
 pub mod types;

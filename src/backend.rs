@@ -3,14 +3,14 @@
 //! Each client gets its own DuckDB connection. DuckDB handles write
 //! serialization internally via its WAL and locking mechanisms.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{NaiveDate, NaiveTime};
 use duckdb::Connection;
 use rust_decimal::Decimal;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::config::Config;
 use crate::error::MallardbError;
@@ -92,11 +92,42 @@ impl DuckDbConnection {
             })?;
         }
 
-        let conn = Connection::open(db_path).map_err(MallardbError::from_duckdb)?;
+        // Try to open, with recovery on corruption
+        let conn = match Connection::open(db_path) {
+            Ok(conn) => conn,
+            Err(e) => {
+                let err_str = e.to_string();
+                // Check for WAL corruption - try recovery
+                if err_str.contains("Serialization Error") || err_str.contains("field id mismatch")
+                {
+                    tracing::warn!(
+                        "Database corruption detected, attempting WAL recovery: {}",
+                        err_str
+                    );
+                    Self::attempt_wal_recovery(db_path)?;
+                    Connection::open(db_path).map_err(MallardbError::from_duckdb)?
+                } else {
+                    return Err(MallardbError::from_duckdb(e));
+                }
+            }
+        };
+
         Ok(DuckDbConnection {
             conn,
             in_transaction: false,
         })
+    }
+
+    /// Attempt to recover from WAL corruption by removing WAL files
+    fn attempt_wal_recovery(db_path: &Path) -> Result<(), MallardbError> {
+        let wal_path = db_path.with_extension("db.wal");
+        if wal_path.exists() {
+            tracing::info!("Removing corrupted WAL file: {:?}", wal_path);
+            std::fs::remove_file(&wal_path).map_err(|e| {
+                MallardbError::Internal(format!("Failed to remove WAL file: {}", e))
+            })?;
+        }
+        Ok(())
     }
 
     /// Create a new read-only connection
@@ -166,6 +197,15 @@ impl DuckDbConnection {
             None => vec![],
         };
         Ok(columns)
+    }
+}
+
+impl Drop for DuckDbConnection {
+    fn drop(&mut self) {
+        // Force WAL checkpoint on connection close to ensure durability
+        if let Err(e) = self.conn.execute_batch("CHECKPOINT") {
+            tracing::debug!("Checkpoint on close failed (may be read-only): {}", e);
+        }
     }
 }
 
@@ -539,12 +579,12 @@ fn execute_transaction(
         "BEGIN" => {
             if *in_transaction {
                 // Already in transaction - no-op (like PostgreSQL, just warns)
-                debug!("BEGIN ignored: already in transaction");
+                trace!("BEGIN ignored: already in transaction");
             } else {
                 conn.execute("BEGIN", [])
                     .map_err(MallardbError::from_duckdb)?;
                 *in_transaction = true;
-                debug!("Transaction started");
+                trace!("Transaction started");
             }
         }
         "COMMIT" => {
@@ -552,10 +592,10 @@ fn execute_transaction(
                 conn.execute("COMMIT", [])
                     .map_err(MallardbError::from_duckdb)?;
                 *in_transaction = false;
-                debug!("Transaction committed");
+                trace!("Transaction committed");
             } else {
                 // Not in transaction - no-op
-                debug!("COMMIT ignored: not in transaction");
+                trace!("COMMIT ignored: not in transaction");
             }
         }
         "ROLLBACK" => {
@@ -563,15 +603,15 @@ fn execute_transaction(
                 conn.execute("ROLLBACK", [])
                     .map_err(MallardbError::from_duckdb)?;
                 *in_transaction = false;
-                debug!("Transaction rolled back");
+                trace!("Transaction rolled back");
             } else {
                 // Not in transaction - no-op
-                debug!("ROLLBACK ignored: not in transaction");
+                trace!("ROLLBACK ignored: not in transaction");
             }
         }
         _ => {
             // SAVEPOINT etc - pass through
-            debug!("Passing through transaction command: {}", tag);
+            trace!("Passing through transaction command: {}", tag);
         }
     }
     Ok(QueryOutput::Command {
@@ -641,9 +681,46 @@ impl Backend {
         // Create PostgreSQL compatibility macros
         Self::init_pg_compat_macros(&base_conn);
 
+        // Create _mallardb schema for job scheduler tables
+        Self::init_mallardb_schema(&base_conn);
+
         info!("Backend initialized with database at {:?}", db_path);
 
         Backend { base_conn, db_path }
+    }
+
+    /// Initialize the _mallardb schema and job_runs table
+    fn init_mallardb_schema(conn: &Connection) {
+        let statements = [
+            "CREATE SCHEMA IF NOT EXISTS _mallardb",
+            "CREATE TABLE IF NOT EXISTS _mallardb.job_runs (
+                run_id TEXT NOT NULL,
+                job_name TEXT NOT NULL,
+                record_type TEXT NOT NULL,
+                file_name TEXT,
+                started_at TIMESTAMP NOT NULL,
+                finished_at TIMESTAMP NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_run_id ON _mallardb.job_runs(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_job_name ON _mallardb.job_runs(job_name)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_record_type ON _mallardb.job_runs(record_type)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_status ON _mallardb.job_runs(status)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_started_at ON _mallardb.job_runs(started_at)",
+        ];
+
+        for sql in statements {
+            if let Err(e) = conn.execute(sql, []) {
+                tracing::warn!(
+                    "Failed to initialize _mallardb schema: {} (SQL: {})",
+                    e,
+                    sql
+                );
+            }
+        }
+
+        info!("Initialized _mallardb schema");
     }
 
     /// Initialize PostgreSQL compatibility macros
@@ -996,6 +1073,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: std::path::PathBuf::from("./jobs"),
         });
 
         let backend = Backend::new(config.clone());
@@ -1024,6 +1102,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: std::path::PathBuf::from("./jobs"),
         });
 
         let backend = Backend::new(config);
@@ -1056,6 +1135,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: std::path::PathBuf::from("./jobs"),
         });
 
         let backend = Backend::new(config);

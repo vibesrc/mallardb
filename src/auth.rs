@@ -150,6 +150,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: PathBuf::from("./jobs"),
         }
     }
 
@@ -288,6 +289,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: PathBuf::from("./jobs"),
         });
         let auth = MallardbAuthSource::new(config);
 

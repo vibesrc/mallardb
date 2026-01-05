@@ -26,6 +26,10 @@ use crate::auth::MallardbAuthSource;
 use crate::backend::{Backend, DuckDbConnection, QueryOutput, Value};
 use crate::catalog::{handle_catalog_query, handle_ignored_set};
 use crate::config::Config;
+use crate::jobs::{
+    JobQueueManager, JobRegistry, MallardbTable, detect_mallardb_table, generate_job_queue_sql,
+    generate_jobs_sql,
+};
 use crate::query_parser::{MallardbQueryParser, MallardbStatement};
 use crate::types::duckdb_type_to_pgwire;
 
@@ -36,6 +40,10 @@ pub struct MallardbHandler {
     conn: Mutex<DuckDbConnection>,
     config: Arc<Config>,
     query_parser: Arc<MallardbQueryParser>,
+    /// Optional jobs registry for _mallardb.jobs queries
+    jobs_registry: Option<Arc<JobRegistry>>,
+    /// Optional jobs queue manager for _mallardb.job_queue queries
+    jobs_queue_manager: Option<Arc<JobQueueManager>>,
 }
 
 impl MallardbHandler {
@@ -44,6 +52,8 @@ impl MallardbHandler {
         backend: &Backend,
         config: Arc<Config>,
         readonly: bool,
+        jobs_registry: Option<Arc<JobRegistry>>,
+        jobs_queue_manager: Option<Arc<JobQueueManager>>,
     ) -> Result<Self, crate::error::MallardbError> {
         let conn = if readonly {
             backend.create_readonly_connection()?
@@ -55,6 +65,8 @@ impl MallardbHandler {
             conn: Mutex::new(conn),
             config: config.clone(),
             query_parser: Arc::new(MallardbQueryParser::new(config)),
+            jobs_registry,
+            jobs_queue_manager,
         })
     }
 
@@ -73,7 +85,46 @@ impl MallardbHandler {
             return Ok(handle_ignored_set());
         }
 
-        // Check for catalog queries first
+        // Check for _mallardb.* queries (jobs introspection)
+        if let Some(table) = detect_mallardb_table(&stmt.table_refs) {
+            match table {
+                MallardbTable::Jobs => {
+                    if let Some(ref registry) = self.jobs_registry {
+                        debug!("Handling _mallardb.jobs query with temp table");
+                        let vt = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(generate_jobs_sql(registry))
+                        });
+                        return self.execute_virtual_table_query(
+                            &stmt.rewritten_sql,
+                            "_mallardb.jobs",
+                            vt.temp_table_name,
+                            &vt.setup_sql,
+                        );
+                    }
+                }
+                MallardbTable::JobQueue => {
+                    if let Some(ref queue_manager) = self.jobs_queue_manager {
+                        debug!("Handling _mallardb.job_queue query with temp table");
+                        let vt = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(generate_job_queue_sql(queue_manager))
+                        });
+                        return self.execute_virtual_table_query(
+                            &stmt.rewritten_sql,
+                            "_mallardb.job_queue",
+                            vt.temp_table_name,
+                            &vt.setup_sql,
+                        );
+                    }
+                }
+                MallardbTable::JobRuns => {
+                    // Pass through to DuckDB - it's a real table
+                    debug!("Passing _mallardb.job_runs query to DuckDB");
+                }
+            }
+        }
+
+        // Check for catalog queries
         if stmt.is_catalog_query
             && let Some(result) = handle_catalog_query(
                 &stmt.sql,
@@ -100,6 +151,72 @@ impl MallardbHandler {
         conn.execute(&stmt.rewritten_sql)
             .map_err(|e| PgWireError::UserError(Box::new(ErrorInfo::from(e))))
     }
+
+    /// Execute a query against a virtual table by:
+    /// 1. Setting up a temp table with the virtual data
+    /// 2. Rewriting the query to use the temp table
+    /// 3. Executing the rewritten query
+    fn execute_virtual_table_query(
+        &self,
+        original_sql: &str,
+        virtual_table: &str,
+        temp_table: &str,
+        setup_sql: &str,
+    ) -> PgWireResult<QueryOutput> {
+        let mut conn = self.conn.lock().map_err(|_| {
+            PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_string(),
+                "XX000".to_string(),
+                "Connection lock poisoned".to_string(),
+            )))
+        })?;
+
+        // Set up the temp table with virtual data
+        debug!("Setting up temp table: {}", temp_table);
+        conn.execute(setup_sql)
+            .map_err(|e| PgWireError::UserError(Box::new(ErrorInfo::from(e))))?;
+
+        // Rewrite the query to use the temp table
+        // Case-insensitive replacement of the virtual table name
+        let rewritten = replace_table_name(original_sql, virtual_table, temp_table);
+        debug!("Rewritten virtual table query: {}", rewritten);
+
+        // Execute the rewritten query
+        conn.execute(&rewritten)
+            .map_err(|e| PgWireError::UserError(Box::new(ErrorInfo::from(e))))
+    }
+}
+
+/// Replace a table name in SQL with another name (case-insensitive)
+fn replace_table_name(sql: &str, from: &str, to: &str) -> String {
+    // Use case-insensitive replacement
+    let lower_sql = sql.to_lowercase();
+    let lower_from = from.to_lowercase();
+
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for (start, _) in lower_sql.match_indices(&lower_from) {
+        // Check that this is a complete identifier (not part of a larger word)
+        let before_ok = start == 0 || !is_ident_char(sql.chars().nth(start - 1).unwrap_or(' '));
+        let after_pos = start + from.len();
+        let after_ok =
+            after_pos >= sql.len() || !is_ident_char(sql.chars().nth(after_pos).unwrap_or(' '));
+
+        if before_ok && after_ok {
+            result.push_str(&sql[last_end..start]);
+            result.push_str(to);
+            last_end = after_pos;
+        }
+    }
+
+    result.push_str(&sql[last_end..]);
+    result
+}
+
+/// Check if a character can be part of an identifier
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// Check if we can properly encode a type in binary format
@@ -604,6 +721,10 @@ pub struct MallardbHandlerFactory {
     backend: Arc<Backend>,
     config: Arc<Config>,
     auth_source: Arc<MallardbAuthSource>,
+    /// Optional jobs registry for _mallardb.jobs queries
+    jobs_registry: Option<Arc<JobRegistry>>,
+    /// Optional jobs queue manager for _mallardb.job_queue queries
+    jobs_queue_manager: Option<Arc<JobQueueManager>>,
 }
 
 impl MallardbHandlerFactory {
@@ -613,6 +734,25 @@ impl MallardbHandlerFactory {
             backend,
             config,
             auth_source,
+            jobs_registry: None,
+            jobs_queue_manager: None,
+        }
+    }
+
+    /// Create a new factory with jobs coordinator integration
+    pub fn with_jobs(
+        backend: Arc<Backend>,
+        config: Arc<Config>,
+        jobs_registry: Arc<JobRegistry>,
+        jobs_queue_manager: Arc<JobQueueManager>,
+    ) -> Self {
+        let auth_source = Arc::new(MallardbAuthSource::new(config.clone()));
+        MallardbHandlerFactory {
+            backend,
+            config,
+            auth_source,
+            jobs_registry: Some(jobs_registry),
+            jobs_queue_manager: Some(jobs_queue_manager),
         }
     }
 
@@ -625,6 +765,8 @@ impl MallardbHandlerFactory {
             &self.backend,
             self.config.clone(),
             false,
+            self.jobs_registry.clone(),
+            self.jobs_queue_manager.clone(),
         )?);
 
         let mut parameters = DefaultServerParameterProvider::default();

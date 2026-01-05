@@ -38,6 +38,9 @@ pub struct Config {
     // TLS (optional - enabled when both cert and key are provided)
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
+
+    // Jobs scheduler
+    pub jobs_dir: PathBuf,
 }
 
 impl Config {
@@ -104,6 +107,10 @@ impl Config {
         let tls_cert_path = std::env::var("MALLARDB_TLS_CERT").ok().map(PathBuf::from);
         let tls_key_path = std::env::var("MALLARDB_TLS_KEY").ok().map(PathBuf::from);
 
+        let jobs_dir = std::env::var("MALLARDB_JOBS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./jobs"));
+
         Ok(Config {
             postgres_user,
             postgres_password,
@@ -123,6 +130,7 @@ impl Config {
             log_queries,
             tls_cert_path,
             tls_key_path,
+            jobs_dir,
         })
     }
 
