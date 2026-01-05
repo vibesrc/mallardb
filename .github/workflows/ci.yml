@@ -27,14 +27,12 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    container: rust:1-slim-bookworm
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: apt-get update && apt-get install -y --no-install-recommends build-essential
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-bookworm-x64
+          shared-key: rust-ci
           save-if: true
       - name: Build release
         run: cargo build --release
@@ -43,16 +41,14 @@ jobs:
     name: Clippy
     needs: build
     runs-on: ubuntu-latest
-    container: rust:1-slim-bookworm
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends build-essential
-          rustup component add clippy
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-bookworm-x64
+          shared-key: rust-ci
           save-if: false
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -60,17 +56,14 @@ jobs:
     name: Test
     needs: build
     runs-on: ubuntu-latest
-    container: rust:1-slim-bookworm
     env:
       MALLARDB_PASSWORD: testpassword
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends build-essential make postgresql-client
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-bookworm-x64
+          shared-key: rust-ci
           save-if: false
       - name: Run unit tests
         run: cargo test --lib
