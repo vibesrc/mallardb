@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 /// Events emitted when job directories change.
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ impl FileWatcher {
                 && let Some(name) = path.file_name()
             {
                 let name = name.to_string_lossy().to_string();
-                debug!("Found job directory: {}", name);
+                trace!("Found job directory: {}", name);
                 jobs.push((name, path));
             }
         }
@@ -97,7 +97,7 @@ impl FileWatcher {
                         WatchEvent::JobChanged { name, .. } => name.clone(),
                         WatchEvent::JobRemoved { name } => name.clone(),
                     };
-                    debug!("Pending event for {}: {:?}", key, watch_event);
+                    trace!("Pending event for {}: {:?}", key, watch_event);
                     pending.insert(key, (watch_event, tokio::time::Instant::now()));
                 }
             }
@@ -116,7 +116,7 @@ impl FileWatcher {
             });
 
             for (name, event) in to_emit {
-                debug!("Emitting debounced event for {}: {:?}", name, event);
+                trace!("Emitting debounced event for {}: {:?}", name, event);
                 if tx.send(event).await.is_err() {
                     // Receiver dropped, stop watching
                     return Ok(());

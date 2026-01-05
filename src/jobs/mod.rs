@@ -22,7 +22,7 @@ use std::time::Duration;
 use cron::Schedule;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::backend::DuckDbConnection;
 
@@ -147,7 +147,7 @@ impl JobsCoordinator {
         // Create placeholder views for virtual tables (for schema introspection)
         for stmt in CREATE_JOB_RUNS_VIEW.split(';').filter(|s| !s.trim().is_empty()) {
             if let Err(e) = conn.execute(stmt) {
-                debug!("Note: Could not create view (may already exist): {}", e);
+                trace!("Note: Could not create view (may already exist): {}", e);
             }
         }
 
@@ -240,7 +240,7 @@ impl JobsCoordinator {
     async fn cancel_scheduler(&self, name: &str) {
         if let Some(handle) = self.scheduler_handles.write().await.remove(name) {
             handle.abort();
-            debug!("Cancelled scheduler for job: {}", name);
+            trace!("Cancelled scheduler for job: {}", name);
         }
     }
 
@@ -271,7 +271,7 @@ impl JobsCoordinator {
                 let now = chrono::Utc::now();
                 let delay = (next_time - now).to_std().unwrap_or(Duration::ZERO);
 
-                debug!(
+                trace!(
                     "Job {} next run at {} (in {:?})",
                     job_name_clone, next_time, delay
                 );
@@ -355,7 +355,7 @@ impl JobsCoordinator {
 
     /// Log execution records to the database.
     fn log_run_records(db_path: &Path, records: &[JobRunRecord]) -> Result<(), String> {
-        debug!("Logging {} job run records to {:?}", records.len(), db_path);
+        trace!("Logging {} job run records to {:?}", records.len(), db_path);
         let db_path_buf = db_path.to_path_buf();
         let mut conn =
             DuckDbConnection::new(&db_path_buf).map_err(|e| format!("Connection error: {}", e))?;
@@ -374,7 +374,7 @@ impl JobsCoordinator {
         // Cancel all schedulers
         let mut handles = self.scheduler_handles.write().await;
         for (name, handle) in handles.drain() {
-            debug!("Cancelling scheduler for job: {}", name);
+            trace!("Cancelling scheduler for job: {}", name);
             handle.abort();
         }
 

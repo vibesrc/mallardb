@@ -163,7 +163,11 @@ async fn main() {
     let args = Args::parse();
 
     // Initialize logging - respects RUST_LOG env var, defaults to info
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Always suppress noisy third-party crates regardless of RUST_LOG setting
+    let base_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = base_filter
+        .add_directive("sqlparser=warn".parse().unwrap())
+        .add_directive("notify=warn".parse().unwrap());
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)

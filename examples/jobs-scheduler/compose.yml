@@ -12,7 +12,6 @@ services:
       # Example env vars used in job SQL
       RETENTION_DAYS: "7"
       METRICS_TABLE: system_metrics
-      RUST_LOG: debug
     volumes:
       - mallardb_data:/var/lib/mallardb
       - ./jobs:/opt/mallardb/jobs:ro

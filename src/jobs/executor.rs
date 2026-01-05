@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tracing::{error, info, trace};
 use uuid::Uuid;
 
 use crate::backend::DuckDbConnection;
@@ -103,7 +103,7 @@ impl JobExecutor {
         // Execute each SQL file in its own transaction
         for (file_name, sql) in interpolated {
             let file_start = Utc::now();
-            debug!("Executing file: {} for job: {}", file_name, job_name);
+            trace!("Executing file: {} for job: {}", file_name, job_name);
 
             match self.execute_file(&mut conn, &sql, timeout).await {
                 Ok(()) => {

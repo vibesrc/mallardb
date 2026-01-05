@@ -10,7 +10,7 @@ use std::sync::Arc;
 use chrono::{NaiveDate, NaiveTime};
 use duckdb::Connection;
 use rust_decimal::Decimal;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::config::Config;
 use crate::error::MallardbError;
@@ -580,12 +580,12 @@ fn execute_transaction(
         "BEGIN" => {
             if *in_transaction {
                 // Already in transaction - no-op (like PostgreSQL, just warns)
-                debug!("BEGIN ignored: already in transaction");
+                trace!("BEGIN ignored: already in transaction");
             } else {
                 conn.execute("BEGIN", [])
                     .map_err(MallardbError::from_duckdb)?;
                 *in_transaction = true;
-                debug!("Transaction started");
+                trace!("Transaction started");
             }
         }
         "COMMIT" => {
@@ -593,10 +593,10 @@ fn execute_transaction(
                 conn.execute("COMMIT", [])
                     .map_err(MallardbError::from_duckdb)?;
                 *in_transaction = false;
-                debug!("Transaction committed");
+                trace!("Transaction committed");
             } else {
                 // Not in transaction - no-op
-                debug!("COMMIT ignored: not in transaction");
+                trace!("COMMIT ignored: not in transaction");
             }
         }
         "ROLLBACK" => {
@@ -604,15 +604,15 @@ fn execute_transaction(
                 conn.execute("ROLLBACK", [])
                     .map_err(MallardbError::from_duckdb)?;
                 *in_transaction = false;
-                debug!("Transaction rolled back");
+                trace!("Transaction rolled back");
             } else {
                 // Not in transaction - no-op
-                debug!("ROLLBACK ignored: not in transaction");
+                trace!("ROLLBACK ignored: not in transaction");
             }
         }
         _ => {
             // SAVEPOINT etc - pass through
-            debug!("Passing through transaction command: {}", tag);
+            trace!("Passing through transaction command: {}", tag);
         }
     }
     Ok(QueryOutput::Command {
