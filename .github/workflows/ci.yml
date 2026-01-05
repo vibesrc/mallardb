@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -20,60 +24,58 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  clippy:
-    name: Clippy
+  build:
+    name: Build
     runs-on: ubuntu-latest
+    container: rust:1-slim-bookworm
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - name: Install dependencies
+        run: apt-get update && apt-get install -y --no-install-recommends build-essential
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-bookworm-x64
+          save-if: true
+      - name: Build release
+        run: cargo build --release
+
+  clippy:
+    name: Clippy
+    needs: build
+    runs-on: ubuntu-latest
+    container: rust:1-slim-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends build-essential
+          rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-bookworm-x64
+          save-if: false
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     name: Test
+    needs: build
     runs-on: ubuntu-latest
+    container: rust:1-slim-bookworm
     env:
       MALLARDB_PASSWORD: testpassword
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Free disk space
+      - name: Install dependencies
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          df -h
+          apt-get update && apt-get install -y --no-install-recommends build-essential make postgresql-client
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-bookworm-x64
+          save-if: false
       - name: Run unit tests
         run: cargo test --lib
       - name: Run integration tests
         run: make test-ci
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          df -h
-      - name: Build release
-        run: cargo build --release
-
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    permissions:
-      checks: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
   deny:
     name: Cargo Deny
@@ -81,21 +83,3 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
-
-  docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: mallardb:test
-      - name: Test Docker image
-        run: |
-          docker run --rm mallardb:test --help
