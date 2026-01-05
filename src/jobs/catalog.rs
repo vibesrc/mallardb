@@ -163,10 +163,14 @@ CREATE TEMP TABLE IF NOT EXISTS _vt_jobs (
         let values: Vec<String> = jobs
             .iter()
             .map(|job| {
-                let queue_max = job.config.queue_max
+                let queue_max = job
+                    .config
+                    .queue_max
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "NULL".to_string());
-                let timeout = job.config.timeout
+                let timeout = job
+                    .config
+                    .timeout
                     .as_ref()
                     .map(|s| format!("'{}'", s.replace('\'', "''")))
                     .unwrap_or_else(|| "NULL".to_string());
@@ -183,10 +187,7 @@ CREATE TEMP TABLE IF NOT EXISTS _vt_jobs (
                 )
             })
             .collect();
-        setup_parts.push(format!(
-            "INSERT INTO _vt_jobs VALUES {}",
-            values.join(", ")
-        ));
+        setup_parts.push(format!("INSERT INTO _vt_jobs VALUES {}", values.join(", ")));
     }
 
     VirtualTableSql {
@@ -214,7 +215,8 @@ CREATE TEMP TABLE IF NOT EXISTS _vt_job_queue (
         let values: Vec<String> = queued
             .iter()
             .map(|run| {
-                let started = run.started_at
+                let started = run
+                    .started_at
                     .map(|t| format!("'{}'::TIMESTAMP", t.naive_utc()))
                     .unwrap_or_else(|| "NULL".to_string());
                 format!(

@@ -98,8 +98,7 @@ impl DuckDbConnection {
             Err(e) => {
                 let err_str = e.to_string();
                 // Check for WAL corruption - try recovery
-                if err_str.contains("Serialization Error")
-                    || err_str.contains("field id mismatch")
+                if err_str.contains("Serialization Error") || err_str.contains("field id mismatch")
                 {
                     tracing::warn!(
                         "Database corruption detected, attempting WAL recovery: {}",
@@ -713,7 +712,11 @@ impl Backend {
 
         for sql in statements {
             if let Err(e) = conn.execute(sql, []) {
-                tracing::warn!("Failed to initialize _mallardb schema: {} (SQL: {})", e, sql);
+                tracing::warn!(
+                    "Failed to initialize _mallardb schema: {} (SQL: {})",
+                    e,
+                    sql
+                );
             }
         }
 

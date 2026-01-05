@@ -70,8 +70,7 @@ impl JobConfig {
 
     /// Parse the cron schedule.
     pub fn parse_schedule(&self) -> Result<Schedule, JobConfigError> {
-        Schedule::from_str(&self.schedule)
-            .map_err(|e| JobConfigError::InvalidCron(e.to_string()))
+        Schedule::from_str(&self.schedule).map_err(|e| JobConfigError::InvalidCron(e.to_string()))
     }
 
     /// Get the timeout as a Duration, if configured.

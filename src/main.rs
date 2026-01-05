@@ -245,10 +245,8 @@ async fn main() {
     run_scripts(&backend, &startdb_dir, "startdb").await;
 
     // Initialize jobs coordinator
-    let jobs_coordinator = JobsCoordinator::new_shared(
-        config.db_path().clone(),
-        config.jobs_dir.clone(),
-    );
+    let jobs_coordinator =
+        JobsCoordinator::new_shared(config.db_path().clone(), config.jobs_dir.clone());
 
     // Start jobs coordinator (non-blocking, runs in background)
     if let Err(e) = jobs_coordinator.start().await {

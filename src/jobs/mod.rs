@@ -20,15 +20,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cron::Schedule;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{error, info, trace, warn};
 
 use crate::backend::DuckDbConnection;
 
 pub use catalog::{
-    detect_mallardb_table, generate_job_queue_sql, generate_job_queue_table, generate_jobs_sql,
-    generate_jobs_table, MallardbTable, VirtualTableSql, CREATE_JOB_RUNS_VIEW,
+    CREATE_JOB_RUNS_VIEW, MallardbTable, VirtualTableSql, detect_mallardb_table,
+    generate_job_queue_sql, generate_job_queue_table, generate_jobs_sql, generate_jobs_table,
 };
 pub use config::JobConfig;
 pub use executor::{ExecutorError, JobExecutor, JobRunRecord};
@@ -131,10 +131,7 @@ impl JobsCoordinator {
             coordinator.handle_watch_events(rx).await;
         });
 
-        info!(
-            "Jobs coordinator started, watching {:?}",
-            self.jobs_dir
-        );
+        info!("Jobs coordinator started, watching {:?}", self.jobs_dir);
         Ok(())
     }
 
@@ -145,7 +142,10 @@ impl JobsCoordinator {
             DuckDbConnection::new(&self.db_path).map_err(|e| format!("Connection error: {}", e))?;
 
         // Create placeholder views for virtual tables (for schema introspection)
-        for stmt in CREATE_JOB_RUNS_VIEW.split(';').filter(|s| !s.trim().is_empty()) {
+        for stmt in CREATE_JOB_RUNS_VIEW
+            .split(';')
+            .filter(|s| !s.trim().is_empty())
+        {
             if let Err(e) = conn.execute(stmt) {
                 trace!("Note: Could not create view (may already exist): {}", e);
             }
@@ -181,8 +181,8 @@ impl JobsCoordinator {
     async fn register_job(&self, name: &str, path: &Path) -> Result<(), String> {
         // Parse config
         let config_path = path.join("job.toml");
-        let config = JobConfig::from_file(&config_path)
-            .map_err(|e| format!("Invalid job.toml: {}", e))?;
+        let config =
+            JobConfig::from_file(&config_path).map_err(|e| format!("Invalid job.toml: {}", e))?;
 
         // Parse schedule
         let schedule = Schedule::from_str(&config.schedule)
@@ -300,10 +300,7 @@ impl JobsCoordinator {
                         .await;
                     }
                 } else {
-                    warn!(
-                        "Job {} queue full, dropping scheduled run",
-                        job_name_clone
-                    );
+                    warn!("Job {} queue full, dropping scheduled run", job_name_clone);
                 }
             }
         });
@@ -336,7 +333,10 @@ impl JobsCoordinator {
             };
 
             // Execute
-            match executor.execute_job(&job_name, &job.sql_files, timeout).await {
+            match executor
+                .execute_job(&job_name, &job.sql_files, timeout)
+                .await
+            {
                 Ok(records) => {
                     // Log to job_runs table
                     if let Err(e) = Self::log_run_records(&db_path, &records) {

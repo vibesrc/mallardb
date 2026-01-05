@@ -88,7 +88,12 @@ impl JobExecutor {
         let run_id = Uuid::new_v4().to_string();
         let job_start = Utc::now();
 
-        info!("Starting job: {} (run_id: {}, {} files)", job_name, run_id, sql_files.len());
+        info!(
+            "Starting job: {} (run_id: {}, {} files)",
+            job_name,
+            run_id,
+            sql_files.len()
+        );
 
         // Load all SQL files at job start (RFC requirement: mid-run edits don't affect current execution)
         let sql_contents = self.load_sql_files(sql_files)?;
@@ -97,8 +102,8 @@ impl JobExecutor {
         let interpolated = self.interpolate_all(&sql_contents)?;
 
         // Create connection for this job execution
-        let mut conn =
-            DuckDbConnection::new(&self.db_path).map_err(|e| ExecutorError::Internal(e.to_string()))?;
+        let mut conn = DuckDbConnection::new(&self.db_path)
+            .map_err(|e| ExecutorError::Internal(e.to_string()))?;
 
         // Execute each SQL file in its own transaction
         for (file_name, sql) in interpolated {
@@ -185,14 +190,18 @@ impl JobExecutor {
     }
 
     /// Load SQL files from disk.
-    fn load_sql_files(&self, sql_files: &[PathBuf]) -> Result<Vec<(String, String)>, ExecutorError> {
+    fn load_sql_files(
+        &self,
+        sql_files: &[PathBuf],
+    ) -> Result<Vec<(String, String)>, ExecutorError> {
         sql_files
             .iter()
             .map(|path| {
-                let content = std::fs::read_to_string(path).map_err(|e| ExecutorError::FileRead {
-                    path: path.display().to_string(),
-                    reason: e.to_string(),
-                })?;
+                let content =
+                    std::fs::read_to_string(path).map_err(|e| ExecutorError::FileRead {
+                        path: path.display().to_string(),
+                        reason: e.to_string(),
+                    })?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -423,7 +432,10 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         std::fs::write(&sql_file, "SELECT 1").unwrap();
 
         let sql_files = vec![sql_file];
-        let records = executor.execute_job("test_job", &sql_files, None).await.unwrap();
+        let records = executor
+            .execute_job("test_job", &sql_files, None)
+            .await
+            .unwrap();
 
         // Should have 2 records: 1 job-level + 1 file-level
         assert_eq!(records.len(), 2);
@@ -450,7 +462,10 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         std::fs::write(&sql_file2, "SELECT 2").unwrap();
 
         let sql_files = vec![sql_file1, sql_file2];
-        let records = executor.execute_job("test_job", &sql_files, None).await.unwrap();
+        let records = executor
+            .execute_job("test_job", &sql_files, None)
+            .await
+            .unwrap();
 
         // Should have 3 records: 1 job-level + 2 file-level
         assert_eq!(records.len(), 3);
@@ -486,7 +501,10 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         std::fs::write(&sql_file2, "INVALID SQL SYNTAX HERE").unwrap();
 
         let sql_files = vec![sql_file1, sql_file2];
-        let records = executor.execute_job("test_job", &sql_files, None).await.unwrap();
+        let records = executor
+            .execute_job("test_job", &sql_files, None)
+            .await
+            .unwrap();
 
         // Should have 3 records: 1 job-level (failed) + 1 success file + 1 failed file
         assert_eq!(records.len(), 3);
@@ -524,19 +542,29 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         std::fs::write(&sql_file1, "SELECT 1").unwrap();
         std::fs::write(&sql_file2, "SELECT 2").unwrap();
 
-        let records = executor.execute_job("test_job", &vec![sql_file1, sql_file2], None).await.unwrap();
+        let records = executor
+            .execute_job("test_job", &vec![sql_file1, sql_file2], None)
+            .await
+            .unwrap();
 
         // All records should have the same run_id
         let run_id = &records[0].run_id;
         assert!(!run_id.is_empty(), "run_id should not be empty");
         for record in &records {
-            assert_eq!(&record.run_id, run_id, "All records should share the same run_id");
+            assert_eq!(
+                &record.run_id, run_id,
+                "All records should share the same run_id"
+            );
         }
 
         // Query patterns users would use:
         // SELECT * FROM _mallardb.job_runs WHERE record_type = 'job'
         let job_level: Vec<_> = records.iter().filter(|r| r.record_type == "job").collect();
-        assert_eq!(job_level.len(), 1, "Should have exactly one job-level record");
+        assert_eq!(
+            job_level.len(),
+            1,
+            "Should have exactly one job-level record"
+        );
 
         // SELECT * FROM _mallardb.job_runs WHERE record_type = 'file'
         let file_level: Vec<_> = records.iter().filter(|r| r.record_type == "file").collect();
@@ -545,6 +573,10 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         // SELECT * FROM _mallardb.job_runs WHERE run_id = '...'
         // Groups all records from a single execution
         let by_run_id: Vec<_> = records.iter().filter(|r| r.run_id == *run_id).collect();
-        assert_eq!(by_run_id.len(), 3, "run_id should group all records from one execution");
+        assert_eq!(
+            by_run_id.len(),
+            3,
+            "run_id should group all records from one execution"
+        );
     }
 }

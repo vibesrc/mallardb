@@ -27,8 +27,8 @@ use crate::backend::{Backend, DuckDbConnection, QueryOutput, Value};
 use crate::catalog::{handle_catalog_query, handle_ignored_set};
 use crate::config::Config;
 use crate::jobs::{
-    detect_mallardb_table, generate_job_queue_sql, generate_jobs_sql, JobQueueManager, JobRegistry,
-    MallardbTable,
+    JobQueueManager, JobRegistry, MallardbTable, detect_mallardb_table, generate_job_queue_sql,
+    generate_jobs_sql,
 };
 use crate::query_parser::{MallardbQueryParser, MallardbStatement};
 use crate::types::duckdb_type_to_pgwire;
@@ -92,8 +92,7 @@ impl MallardbHandler {
                     if let Some(ref registry) = self.jobs_registry {
                         debug!("Handling _mallardb.jobs query with temp table");
                         let vt = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(generate_jobs_sql(registry))
+                            tokio::runtime::Handle::current().block_on(generate_jobs_sql(registry))
                         });
                         return self.execute_virtual_table_query(
                             &stmt.rewritten_sql,
