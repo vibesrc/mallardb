@@ -1,0 +1,4 @@
+# Clean up old data daily at midnight
+schedule = "0 0 0 * * *"
+enabled = true
+timeout = "5m"

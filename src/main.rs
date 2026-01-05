@@ -10,10 +10,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use clap::Parser;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -21,6 +23,7 @@ use tracing_subscriber::EnvFilter;
 use mallardb::backend::Backend;
 use mallardb::config::Config;
 use mallardb::handler::MallardbHandlerFactory;
+use mallardb::jobs::JobsCoordinator;
 
 use pgwire::tokio::process_socket;
 
@@ -237,8 +240,25 @@ async fn main() {
     }
     run_scripts(&backend, &startdb_dir, "startdb").await;
 
-    // Create handler factory
-    let factory = Arc::new(MallardbHandlerFactory::new(backend, config.clone()));
+    // Initialize jobs coordinator
+    let jobs_coordinator = JobsCoordinator::new_shared(
+        config.db_path().clone(),
+        config.jobs_dir.clone(),
+    );
+
+    // Start jobs coordinator (non-blocking, runs in background)
+    if let Err(e) = jobs_coordinator.start().await {
+        error!("Failed to start jobs coordinator: {}", e);
+        // Continue without jobs scheduler - not fatal
+    }
+
+    // Create handler factory with jobs integration
+    let factory = Arc::new(MallardbHandlerFactory::with_jobs(
+        backend,
+        config.clone(),
+        Arc::clone(jobs_coordinator.registry()),
+        Arc::clone(jobs_coordinator.queue_manager()),
+    ));
 
     // Start listening
     let listen_addr = config.listen_addr();
@@ -256,6 +276,7 @@ async fn main() {
     // Shutdown flag
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
+    let jobs_coordinator_clone = Arc::clone(&jobs_coordinator);
 
     // Spawn shutdown signal handler
     tokio::spawn(async move {
@@ -283,10 +304,17 @@ async fn main() {
 
         info!("Shutdown signal received, stopping...");
         shutdown_clone.store(true, Ordering::SeqCst);
+        jobs_coordinator_clone.shutdown().await;
     });
+
+    // Track active connections for graceful shutdown
+    let mut connections: JoinSet<()> = JoinSet::new();
 
     // Accept connections until shutdown
     while !shutdown.load(Ordering::SeqCst) {
+        // Clean up completed connections
+        while connections.try_join_next().is_some() {}
+
         tokio::select! {
             result = listener.accept() => {
                 match result {
@@ -298,7 +326,7 @@ async fn main() {
                             Ok(connection_handler) => {
                                 let connection_handler = Arc::new(connection_handler);
                                 let tls = tls_acceptor.clone();
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     if let Err(e) = process_socket(socket, tls, connection_handler).await {
                                         error!("Connection error from {}: {:?}", addr, e);
                                     }
@@ -315,8 +343,27 @@ async fn main() {
                     }
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
                 // Check shutdown flag periodically
+            }
+        }
+    }
+
+    // Graceful shutdown: wait for active connections with timeout
+    let active = connections.len();
+    if active > 0 {
+        info!("Waiting for {} active connection(s) to close...", active);
+        let shutdown_timeout = Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + shutdown_timeout;
+
+        while !connections.is_empty() {
+            tokio::select! {
+                _ = connections.join_next() => {}
+                _ = tokio::time::sleep_until(deadline) => {
+                    warn!("Shutdown timeout reached, {} connection(s) still active", connections.len());
+                    connections.abort_all();
+                    break;
+                }
             }
         }
     }

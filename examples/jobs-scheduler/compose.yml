@@ -1,0 +1,26 @@
+services:
+  mallardb:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "5432:5432"
+    environment:
+      MALLARDB_USER: mallard
+      MALLARDB_PASSWORD: mallard
+      MALLARDB_DATABASE: /var/lib/mallardb/data/mallard.db
+      # Example env vars used in job SQL
+      RETENTION_DAYS: "7"
+      METRICS_TABLE: system_metrics
+      RUST_LOG: debug
+    volumes:
+      - mallardb_data:/var/lib/mallardb
+      - ./jobs:/opt/mallardb/jobs:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "localhost", "-p", "5432", "-U", "mallard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mallardb_data:

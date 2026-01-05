@@ -3,7 +3,7 @@
 //! Each client gets its own DuckDB connection. DuckDB handles write
 //! serialization internally via its WAL and locking mechanisms.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -92,11 +92,43 @@ impl DuckDbConnection {
             })?;
         }
 
-        let conn = Connection::open(db_path).map_err(MallardbError::from_duckdb)?;
+        // Try to open, with recovery on corruption
+        let conn = match Connection::open(db_path) {
+            Ok(conn) => conn,
+            Err(e) => {
+                let err_str = e.to_string();
+                // Check for WAL corruption - try recovery
+                if err_str.contains("Serialization Error")
+                    || err_str.contains("field id mismatch")
+                {
+                    tracing::warn!(
+                        "Database corruption detected, attempting WAL recovery: {}",
+                        err_str
+                    );
+                    Self::attempt_wal_recovery(db_path)?;
+                    Connection::open(db_path).map_err(MallardbError::from_duckdb)?
+                } else {
+                    return Err(MallardbError::from_duckdb(e));
+                }
+            }
+        };
+
         Ok(DuckDbConnection {
             conn,
             in_transaction: false,
         })
+    }
+
+    /// Attempt to recover from WAL corruption by removing WAL files
+    fn attempt_wal_recovery(db_path: &Path) -> Result<(), MallardbError> {
+        let wal_path = db_path.with_extension("db.wal");
+        if wal_path.exists() {
+            tracing::info!("Removing corrupted WAL file: {:?}", wal_path);
+            std::fs::remove_file(&wal_path).map_err(|e| {
+                MallardbError::Internal(format!("Failed to remove WAL file: {}", e))
+            })?;
+        }
+        Ok(())
     }
 
     /// Create a new read-only connection
@@ -166,6 +198,15 @@ impl DuckDbConnection {
             None => vec![],
         };
         Ok(columns)
+    }
+}
+
+impl Drop for DuckDbConnection {
+    fn drop(&mut self) {
+        // Force WAL checkpoint on connection close to ensure durability
+        if let Err(e) = self.conn.execute_batch("CHECKPOINT") {
+            tracing::debug!("Checkpoint on close failed (may be read-only): {}", e);
+        }
     }
 }
 
@@ -641,9 +682,38 @@ impl Backend {
         // Create PostgreSQL compatibility macros
         Self::init_pg_compat_macros(&base_conn);
 
+        // Create _mallardb schema for job scheduler tables
+        Self::init_mallardb_schema(&base_conn);
+
         info!("Backend initialized with database at {:?}", db_path);
 
         Backend { base_conn, db_path }
+    }
+
+    /// Initialize the _mallardb schema and job_runs table
+    fn init_mallardb_schema(conn: &Connection) {
+        let statements = [
+            "CREATE SCHEMA IF NOT EXISTS _mallardb",
+            "CREATE TABLE IF NOT EXISTS _mallardb.job_runs (
+                job_name TEXT NOT NULL,
+                file_name TEXT,
+                started_at TIMESTAMP NOT NULL,
+                finished_at TIMESTAMP NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_job_name ON _mallardb.job_runs(job_name)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_status ON _mallardb.job_runs(status)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_started_at ON _mallardb.job_runs(started_at)",
+        ];
+
+        for sql in statements {
+            if let Err(e) = conn.execute(sql, []) {
+                tracing::warn!("Failed to initialize _mallardb schema: {} (SQL: {})", e, sql);
+            }
+        }
+
+        info!("Initialized _mallardb schema");
     }
 
     /// Initialize PostgreSQL compatibility macros
@@ -728,7 +798,7 @@ mod tests {
     #[test]
     fn test_create_connection() {
         let (_dir, db_path) = create_test_db();
-        let mut conn = DuckDbConnection::new(&db_path).unwrap();
+        let conn = DuckDbConnection::new(&db_path).unwrap();
         assert!(db_path.exists());
         drop(conn);
     }
@@ -996,6 +1066,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: std::path::PathBuf::from("./jobs"),
         });
 
         let backend = Backend::new(config.clone());
@@ -1024,6 +1095,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: std::path::PathBuf::from("./jobs"),
         });
 
         let backend = Backend::new(config);
@@ -1056,6 +1128,7 @@ mod tests {
             log_queries: false,
             tls_cert_path: None,
             tls_key_path: None,
+            jobs_dir: std::path::PathBuf::from("./jobs"),
         });
 
         let backend = Backend::new(config);

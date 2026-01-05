@@ -31,6 +31,10 @@ VOLUME /var/lib/mallardb
 VOLUME /docker-entrypoint-initdb.d
 VOLUME /docker-entrypoint-startdb.d
 
+# Job scheduler directory
+ENV MALLARDB_JOBS_DIR=/opt/mallardb/jobs
+VOLUME /opt/mallardb/jobs
+
 EXPOSE 5432
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \

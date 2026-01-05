@@ -15,7 +15,8 @@ use pgwire::error::PgWireResult;
 use crate::catalog::is_pg_ignored_set_from_kind;
 use crate::config::Config;
 use crate::sql_rewriter::{
-    StatementKind, contains_catalog_reference, kind_returns_rows, parse_sql, rewrite_sql,
+    StatementKind, TableRef, contains_catalog_reference, extract_table_refs, kind_returns_rows,
+    parse_sql, rewrite_sql,
 };
 
 /// A parsed and analyzed SQL statement
@@ -31,6 +32,8 @@ pub struct MallardbStatement {
     pub is_pg_ignored_set: bool,
     /// Whether this needs catalog emulation
     pub is_catalog_query: bool,
+    /// Table references extracted from AST
+    pub table_refs: Vec<TableRef>,
 }
 
 impl MallardbStatement {
@@ -38,6 +41,13 @@ impl MallardbStatement {
     pub fn new(sql: &str, config: &Config) -> Self {
         let parsed = parse_sql(sql);
         let kind = parsed.kind;
+
+        // Extract table references from AST
+        let table_refs = parsed
+            .statement
+            .as_ref()
+            .map(extract_table_refs)
+            .unwrap_or_default();
 
         // Check if this is a PG-specific SET to ignore
         let is_pg_ignored_set = is_pg_ignored_set_from_kind(sql, kind);
@@ -54,6 +64,7 @@ impl MallardbStatement {
             kind,
             is_pg_ignored_set,
             is_catalog_query,
+            table_refs,
         }
     }
 

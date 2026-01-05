@@ -42,6 +42,78 @@ pub struct ParsedSql {
     pub statement: Option<Statement>,
 }
 
+/// A qualified table reference (schema.table)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRef {
+    pub schema: Option<String>,
+    pub table: String,
+}
+
+/// Extract all table references from a parsed statement
+pub fn extract_table_refs(stmt: &Statement) -> Vec<TableRef> {
+    let mut refs = Vec::new();
+    extract_table_refs_from_statement(stmt, &mut refs);
+    refs
+}
+
+fn extract_table_refs_from_statement(stmt: &Statement, refs: &mut Vec<TableRef>) {
+    // We only need to extract table refs from SELECT statements for _mallardb detection
+    if let Statement::Query(query) = stmt {
+        extract_table_refs_from_query(query, refs);
+    }
+}
+
+fn extract_table_refs_from_query(query: &Query, refs: &mut Vec<TableRef>) {
+    if let SetExpr::Select(select) = query.body.as_ref() {
+        extract_table_refs_from_select(select, refs);
+    }
+}
+
+fn extract_table_refs_from_select(select: &Select, refs: &mut Vec<TableRef>) {
+    for table_with_joins in &select.from {
+        extract_table_refs_from_table_with_joins(table_with_joins, refs);
+    }
+}
+
+fn extract_table_refs_from_table_with_joins(
+    twj: &sqlparser::ast::TableWithJoins,
+    refs: &mut Vec<TableRef>,
+) {
+    extract_table_refs_from_table_factor(&twj.relation, refs);
+    for join in &twj.joins {
+        extract_table_refs_from_table_factor(&join.relation, refs);
+    }
+}
+
+fn extract_table_refs_from_table_factor(factor: &TableFactor, refs: &mut Vec<TableRef>) {
+    if let TableFactor::Table { name, .. } = factor {
+        extract_table_ref_from_object_name(name, refs);
+    }
+}
+
+fn extract_table_ref_from_object_name(name: &sqlparser::ast::ObjectName, refs: &mut Vec<TableRef>) {
+    let parts: Vec<String> = name
+        .0
+        .iter()
+        .filter_map(|part| part.as_ident().map(|ident| ident.value.to_lowercase()))
+        .collect();
+    match parts.len() {
+        1 => refs.push(TableRef {
+            schema: None,
+            table: parts[0].clone(),
+        }),
+        2 => refs.push(TableRef {
+            schema: Some(parts[0].clone()),
+            table: parts[1].clone(),
+        }),
+        n if n >= 3 => refs.push(TableRef {
+            schema: Some(parts[n - 2].clone()),
+            table: parts[n - 1].clone(),
+        }),
+        _ => {}
+    }
+}
+
 /// Parse and classify a SQL statement (single parse operation)
 pub fn parse_sql(sql: &str) -> ParsedSql {
     let trimmed = sql.trim();
