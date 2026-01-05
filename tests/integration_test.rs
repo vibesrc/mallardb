@@ -297,7 +297,7 @@ mod server_tests {
         assert!(!rows.is_empty());
         // Verify we get type information
         for row in rows {
-            let _oid: i64 = row.get("oid");
+            let _oid: Option<i64> = row.get("oid");
             let _typname: &str = row.get("typname");
         }
     }
