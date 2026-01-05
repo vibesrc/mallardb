@@ -695,14 +695,18 @@ impl Backend {
         let statements = [
             "CREATE SCHEMA IF NOT EXISTS _mallardb",
             "CREATE TABLE IF NOT EXISTS _mallardb.job_runs (
+                run_id TEXT NOT NULL,
                 job_name TEXT NOT NULL,
+                record_type TEXT NOT NULL,
                 file_name TEXT,
                 started_at TIMESTAMP NOT NULL,
                 finished_at TIMESTAMP NOT NULL,
                 status TEXT NOT NULL,
                 error_message TEXT
             )",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_run_id ON _mallardb.job_runs(run_id)",
             "CREATE INDEX IF NOT EXISTS idx_job_runs_job_name ON _mallardb.job_runs(job_name)",
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_record_type ON _mallardb.job_runs(record_type)",
             "CREATE INDEX IF NOT EXISTS idx_job_runs_status ON _mallardb.job_runs(status)",
             "CREATE INDEX IF NOT EXISTS idx_job_runs_started_at ON _mallardb.job_runs(started_at)",
         ];

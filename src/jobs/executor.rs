@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, error, info};
+use uuid::Uuid;
 
 use crate::backend::DuckDbConnection;
 
@@ -32,8 +33,14 @@ pub enum ExecutorError {
 /// Record of a job or file execution for logging to _mallardb.job_runs.
 #[derive(Debug, Clone)]
 pub struct JobRunRecord {
+    /// Unique identifier for this job run (shared across job and file records).
+    pub run_id: String,
+
     /// Name of the job.
     pub job_name: String,
+
+    /// Record type: "job" for overall job summary, "file" for individual file execution.
+    pub record_type: String,
 
     /// Name of the SQL file (None for job-level record).
     pub file_name: Option<String>,
@@ -78,9 +85,10 @@ impl JobExecutor {
         timeout: Option<Duration>,
     ) -> Result<Vec<JobRunRecord>, ExecutorError> {
         let mut records = Vec::new();
+        let run_id = Uuid::new_v4().to_string();
         let job_start = Utc::now();
 
-        info!("Starting job: {} ({} files)", job_name, sql_files.len());
+        info!("Starting job: {} (run_id: {}, {} files)", job_name, run_id, sql_files.len());
 
         // Load all SQL files at job start (RFC requirement: mid-run edits don't affect current execution)
         let sql_contents = self.load_sql_files(sql_files)?;
@@ -106,7 +114,9 @@ impl JobExecutor {
                         finished - file_start
                     );
                     records.push(JobRunRecord {
+                        run_id: run_id.clone(),
                         job_name: job_name.to_string(),
+                        record_type: "file".to_string(),
                         file_name: Some(file_name),
                         started_at: file_start,
                         finished_at: finished,
@@ -119,7 +129,9 @@ impl JobExecutor {
                     error!("Job {} failed on {}: {}", job_name, file_name, error_msg);
 
                     records.push(JobRunRecord {
+                        run_id: run_id.clone(),
                         job_name: job_name.to_string(),
+                        record_type: "file".to_string(),
                         file_name: Some(file_name),
                         started_at: file_start,
                         finished_at: Utc::now(),
@@ -131,7 +143,9 @@ impl JobExecutor {
                     records.insert(
                         0,
                         JobRunRecord {
+                            run_id: run_id.clone(),
                             job_name: job_name.to_string(),
+                            record_type: "job".to_string(),
                             file_name: None,
                             started_at: job_start,
                             finished_at: Utc::now(),
@@ -148,14 +162,17 @@ impl JobExecutor {
         // Add job-level success record at the beginning
         let job_finished = Utc::now();
         info!(
-            "Job {} completed successfully in {:?}",
+            "Job {} (run_id: {}) completed successfully in {:?}",
             job_name,
+            run_id,
             job_finished - job_start
         );
         records.insert(
             0,
             JobRunRecord {
+                run_id,
                 job_name: job_name.to_string(),
+                record_type: "job".to_string(),
                 file_name: None,
                 started_at: job_start,
                 finished_at: job_finished,
@@ -256,9 +273,11 @@ impl JobExecutor {
                 .unwrap_or_else(|| "NULL".to_string());
 
             let sql = format!(
-                "INSERT INTO _mallardb.job_runs (job_name, file_name, started_at, finished_at, status, error_message) \
-                 VALUES ('{}', {}, '{}', '{}', '{}', {})",
+                "INSERT INTO _mallardb.job_runs (run_id, job_name, record_type, file_name, started_at, finished_at, status, error_message) \
+                 VALUES ('{}', '{}', '{}', {}, '{}', '{}', '{}', {})",
+                record.run_id,
                 record.job_name.replace('\'', "''"),
+                record.record_type,
                 file_value,
                 record.started_at.format("%Y-%m-%d %H:%M:%S%.6f"),
                 record.finished_at.format("%Y-%m-%d %H:%M:%S%.6f"),
@@ -409,10 +428,11 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         // Should have 2 records: 1 job-level + 1 file-level
         assert_eq!(records.len(), 2);
 
-        // First record should be job-level (no file_name)
+        // First record should be job-level
         let job_record = &records[0];
         assert_eq!(job_record.job_name, "test_job");
-        assert!(job_record.file_name.is_none(), "Job-level record should have no file_name");
+        assert_eq!(job_record.record_type, "job");
+        assert!(job_record.file_name.is_none());
         assert_eq!(job_record.status, "success");
     }
 
@@ -436,16 +456,18 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         assert_eq!(records.len(), 3);
 
         // First record is job-level
-        assert!(records[0].file_name.is_none());
+        assert_eq!(records[0].record_type, "job");
 
         // Remaining records are file-level with file names
         let file_record1 = &records[1];
         assert_eq!(file_record1.job_name, "test_job");
+        assert_eq!(file_record1.record_type, "file");
         assert_eq!(file_record1.file_name.as_deref(), Some("01_first.sql"));
         assert_eq!(file_record1.status, "success");
 
         let file_record2 = &records[2];
         assert_eq!(file_record2.job_name, "test_job");
+        assert_eq!(file_record2.record_type, "file");
         assert_eq!(file_record2.file_name.as_deref(), Some("02_second.sql"));
         assert_eq!(file_record2.status, "success");
     }
@@ -471,42 +493,58 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
 
         // Job-level record should be first and show failure
         let job_record = &records[0];
-        assert!(job_record.file_name.is_none(), "Job-level record should have no file_name");
+        assert_eq!(job_record.record_type, "job");
         assert_eq!(job_record.status, "failed");
         assert!(job_record.error_message.is_some());
 
         // First file succeeded
         let file_record1 = &records[1];
+        assert_eq!(file_record1.record_type, "file");
         assert_eq!(file_record1.file_name.as_deref(), Some("01_good.sql"));
         assert_eq!(file_record1.status, "success");
 
         // Second file failed
         let file_record2 = &records[2];
+        assert_eq!(file_record2.record_type, "file");
         assert_eq!(file_record2.file_name.as_deref(), Some("02_bad.sql"));
         assert_eq!(file_record2.status, "failed");
         assert!(file_record2.error_message.is_some());
     }
 
     #[tokio::test]
-    async fn test_job_level_vs_file_level_query_pattern() {
-        // This test documents the expected query patterns for job_runs
+    async fn test_run_id_groups_job_and_file_records() {
+        // This test verifies that run_id correctly groups job and file records
         let (_temp, db_path) = setup_test_db();
         let executor = JobExecutor::new(db_path);
 
         let sql_dir = _temp.path().join("test_job");
         std::fs::create_dir_all(&sql_dir).unwrap();
-        let sql_file = sql_dir.join("01.sql");
-        std::fs::write(&sql_file, "SELECT 1").unwrap();
+        let sql_file1 = sql_dir.join("01.sql");
+        let sql_file2 = sql_dir.join("02.sql");
+        std::fs::write(&sql_file1, "SELECT 1").unwrap();
+        std::fs::write(&sql_file2, "SELECT 2").unwrap();
 
-        let records = executor.execute_job("test_job", &vec![sql_file], None).await.unwrap();
+        let records = executor.execute_job("test_job", &vec![sql_file1, sql_file2], None).await.unwrap();
 
-        // Simulate the query patterns users would use:
-        // SELECT * FROM _mallardb.job_runs WHERE file_name IS NULL  -- job-level only
-        let job_level: Vec<_> = records.iter().filter(|r| r.file_name.is_none()).collect();
+        // All records should have the same run_id
+        let run_id = &records[0].run_id;
+        assert!(!run_id.is_empty(), "run_id should not be empty");
+        for record in &records {
+            assert_eq!(&record.run_id, run_id, "All records should share the same run_id");
+        }
+
+        // Query patterns users would use:
+        // SELECT * FROM _mallardb.job_runs WHERE record_type = 'job'
+        let job_level: Vec<_> = records.iter().filter(|r| r.record_type == "job").collect();
         assert_eq!(job_level.len(), 1, "Should have exactly one job-level record");
 
-        // SELECT * FROM _mallardb.job_runs WHERE file_name IS NOT NULL  -- file-level only
-        let file_level: Vec<_> = records.iter().filter(|r| r.file_name.is_some()).collect();
-        assert_eq!(file_level.len(), 1, "Should have exactly one file-level record");
+        // SELECT * FROM _mallardb.job_runs WHERE record_type = 'file'
+        let file_level: Vec<_> = records.iter().filter(|r| r.record_type == "file").collect();
+        assert_eq!(file_level.len(), 2, "Should have two file-level records");
+
+        // SELECT * FROM _mallardb.job_runs WHERE run_id = '...'
+        // Groups all records from a single execution
+        let by_run_id: Vec<_> = records.iter().filter(|r| r.run_id == *run_id).collect();
+        assert_eq!(by_run_id.len(), 3, "run_id should group all records from one execution");
     }
 }
