@@ -543,7 +543,7 @@ COPY source.public.orders TO '${S3_BUCKET}/orders.parquet';
         std::fs::write(&sql_file2, "SELECT 2").unwrap();
 
         let records = executor
-            .execute_job("test_job", &vec![sql_file1, sql_file2], None)
+            .execute_job("test_job", &[sql_file1, sql_file2], None)
             .await
             .unwrap();
 
